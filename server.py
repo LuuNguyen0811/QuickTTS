@@ -138,9 +138,9 @@ def main():
     logs = ROOT / "logs"
     logs.mkdir(exist_ok=True)
     (logs / "server.pid").write_text(str(os.getpid()))
-    if not MODEL.is_file() or not VOICES.is_file():
-        print(f"missing model files in {MODEL.parent}", file=sys.stderr, flush=True)
-        sys.exit(1)
+    from ensure_models import ensure_models
+
+    ensure_models(["kokoro-v1.0.int8.onnx", "voices-v1.0.bin"])
     load_model()
     try:
         httpd = Server((HOST, PORT), Handler)

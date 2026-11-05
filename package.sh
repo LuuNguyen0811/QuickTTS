@@ -4,7 +4,8 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 PY="$ROOT/.venv/bin/python"
 "$PY" -m pip install pyinstaller
-"$PY" /Users/luunguyen/kokoro-tts/assets/make_icons.py
+"$PY" "$ROOT/ensure_models.py"
+"$PY" "$ROOT/assets/make_icons.py"
 iconutil -c icns "$ROOT/assets/AppIcon.iconset" -o "$ROOT/assets/AppIcon.icns"
 "$PY" -m PyInstaller --noconfirm --windowed --name QuickTTS \
   --icon "$ROOT/assets/AppIcon.icns" \

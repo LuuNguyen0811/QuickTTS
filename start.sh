@@ -5,6 +5,9 @@ PY="$ROOT/.venv/bin/python"
 export PYTHONUNBUFFERED=1
 mkdir -p "$ROOT/logs"
 
+echo "checking speech models"
+"$PY" "$ROOT/ensure_models.py" kokoro-v1.0.int8.onnx voices-v1.0.bin
+
 start_one() {
   local name="$1"
   local script="$2"

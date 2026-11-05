@@ -5,6 +5,7 @@ import ctypes
 import ctypes.util
 import gc
 import json
+import math
 import subprocess
 import sys
 import threading
@@ -23,7 +24,9 @@ from AppKit import (
     NSApplicationActivationPolicyAccessory,
     NSBackingStoreBuffered,
     NSBeep,
+    NSBezierPath,
     NSButton,
+    NSColor,
     NSEvent,
     NSEventMaskKeyDown,
     NSImage,
@@ -40,7 +43,7 @@ from AppKit import (
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskTitled,
 )
-from Foundation import NSObject
+from Foundation import NSMakeSize, NSObject, NSRunLoop, NSRunLoopCommonModes, NSTimer
 from PyObjCTools import AppHelper
 
 import hotkey
@@ -67,10 +70,10 @@ MODEL_FILES = {
     "fp32": "kokoro-v1.0.onnx",
 }
 DEFAULT_CONFIG = {
-    "model": "int8",
+    "model": "fp32",
     "voice": "af_heart",
     "keyCode": GRAVE_KEY,
-    "modifiers": ["control", "option"],
+    "modifiers": ["option"],
 }
 
 _app = None
@@ -84,6 +87,58 @@ def menu_bar_image():
     image.setTemplate_(True)
     image.setSize_((18, 18))
     return image
+
+
+def speaking_frames(count: int = 8):
+    """Equalizer frames of the menu-bar waveform, same layout as the idle icon."""
+    bars = (
+        (62, 95, 173, 270),
+        (120, 154, 103, 340),
+        (178, 213, 39, 403),
+        (236, 271, 125, 318),
+        (295, 329, 77, 366),
+        (353, 387, 157, 286),
+    )
+    x0, y0, x1, y1 = 62, 39, 387, 403
+    size = 18.0
+    art_w = x1 - x0 + 1
+    art_h = y1 - y0 + 1
+    pad = size * 0.06
+    scale = min((size - pad * 2) / art_w, (size - pad * 2) / art_h)
+    origin_x = (size - art_w * scale) / 2
+    origin_y = (size - art_h * scale) / 2
+    layout = []
+    for left, right, top, bottom in bars:
+        width = (right - left + 1) * scale
+        cocoa_top = origin_y + (y1 - top) * scale
+        cocoa_bottom = origin_y + (y1 - bottom) * scale
+        layout.append(
+            (
+                origin_x + (left - x0) * scale,
+                width,
+                (cocoa_top + cocoa_bottom) / 2,
+                cocoa_top - cocoa_bottom,
+            )
+        )
+
+    frames = []
+    for frame in range(count):
+        image = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+        image.lockFocus()
+        NSColor.blackColor().set()
+        for index, (x, width, center, height) in enumerate(layout):
+            phase = 2 * math.pi * frame / count - index * (math.pi / 3)
+            factor = 0.22 + 0.78 * (0.5 + 0.5 * math.sin(phase))
+            bar_h = max(width, height * factor)
+            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                NSMakeRect(x, center - bar_h / 2, width, bar_h),
+                width / 2,
+                width / 2,
+            ).fill()
+        image.unlockFocus()
+        image.setTemplate_(True)
+        frames.append(image)
+    return frames
 
 
 def app_root() -> Path:
@@ -135,7 +190,16 @@ _VOICE_LANG = {
 }
 
 
+def ensure_source_models(names: list[str]) -> None:
+    if getattr(sys, "frozen", False):
+        return
+    from ensure_models import ensure_models
+
+    ensure_models(names, report=log)
+
+
 def voice_names() -> list[str]:
+    ensure_source_models(["voices-v1.0.bin"])
     voices = np.load(app_root() / "models" / "voices-v1.0.bin")
 
     def sort_key(name: str):
@@ -223,11 +287,11 @@ def load_config() -> tuple[dict, bool]:
         except (OSError, json.JSONDecodeError):
             first_launch = True
     if config.get("model") not in MODEL_FILES:
-        config["model"] = "int8"
+        config["model"] = "fp32"
     if not isinstance(config.get("keyCode"), int):
         config["keyCode"] = GRAVE_KEY
     if not isinstance(config.get("modifiers"), list) or not config["modifiers"]:
-        config["modifiers"] = ["control", "option"]
+        config["modifiers"] = ["option"]
     if not isinstance(config.get("voice"), str):
         config["voice"] = "af_heart"
     save_config(config)
@@ -277,7 +341,9 @@ class Engine:
     def _open(self, model_id: str):
         from kokoro_onnx import Kokoro
 
-        path = app_root() / "models" / MODEL_FILES[model_id]
+        filename = MODEL_FILES[model_id]
+        ensure_source_models([filename, "voices-v1.0.bin"])
+        path = app_root() / "models" / filename
         voices = app_root() / "models" / "voices-v1.0.bin"
         return Kokoro(str(path), str(voices))
 
@@ -396,6 +462,10 @@ class KokoroApp(NSObject):
         self._monitor = None
         self._copy = None
         self.status = None
+        self._idle_image = None
+        self._speak_frames = None
+        self._speak_frame = 0
+        self._speak_timer = None
         self.model_popup = None
         self.voice_popup = None
         self.shortcut_field = None
@@ -427,12 +497,56 @@ class KokoroApp(NSObject):
             NSVariableStatusItemLength
         )
         image = menu_bar_image()
+        self._idle_image = image
         button = self.status.button()
         if image is not None:
             button.setImage_(image)
         else:
             button.setTitle_(APP_NAME)
         self.rebuild_menu()
+
+    @objc.python_method
+    def _begin_speaking_animation(self):
+        if self._speak_timer is not None or self.status is None:
+            return
+        if not self.player.busy():
+            return
+        if not self._speak_frames:
+            self._speak_frames = speaking_frames()
+        self._speak_frame = 0
+        button = self.status.button()
+        if button is not None:
+            button.setImage_(self._speak_frames[0])
+        timer = NSTimer.timerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.1, self, "tickSpeaking:", None, True
+        )
+        NSRunLoop.currentRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)
+        self._speak_timer = timer
+
+    def tickSpeaking_(self, timer):
+        del timer
+        if self.status is None or not self.player.busy():
+            self._end_speaking_animation()
+            return
+        frames = self._speak_frames
+        if not frames:
+            return
+        self._speak_frame = (self._speak_frame + 1) % len(frames)
+        button = self.status.button()
+        if button is not None:
+            button.setImage_(frames[self._speak_frame])
+
+    @objc.python_method
+    def _end_speaking_animation(self):
+        timer = self._speak_timer
+        self._speak_timer = None
+        if timer is not None:
+            timer.invalidate()
+        if self.status is None or self._idle_image is None:
+            return
+        button = self.status.button()
+        if button is not None:
+            button.setImage_(self._idle_image)
 
     @objc.python_method
     def rebuild_menu(self):
@@ -530,6 +644,7 @@ class KokoroApp(NSObject):
             self.set_status("Model is still loading")
             return
         generation = self.player.begin()
+        AppHelper.callAfter(self._begin_speaking_animation)
         log(f"speaking {len(text)} characters")
         try:
             wav = self.engine.synthesize(text, self.config["voice"])
@@ -546,6 +661,7 @@ class KokoroApp(NSObject):
         self._copy = None
         self.player.stop()
         release_memory()
+        self._end_speaking_animation()
         self.set_status("Stopped")
         log("stopped")
 
@@ -715,7 +831,7 @@ class KokoroApp(NSObject):
         content.addSubview_(self.record_button)
 
         hint = self._label(
-            "Option+` is a dead key on the ABC layout. Control+Option+` is a reliable shortcut.",
+            "Default shortcut is Option+`. On the ABC layout that key is a dead key, so add Control if it does not fire.",
             24,
             78,
             472,
