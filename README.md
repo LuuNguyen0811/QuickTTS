@@ -11,7 +11,7 @@ A tool that speaks selected text with Kokoro, on this Mac, with no API key.
 1. Open `QuickTTS.dmg`.
 2. Drag **QuickTTS** onto **Applications**.
 3. Open **QuickTTS** from Applications.
-4. If macOS says it cannot open the app, right-click QuickTTS, choose **Open**, then **Open** again. The app is not notarized with Apple.
+4. Grant permission
 
 QuickTTS appears in the menu bar as a speaker icon. It does not stay in the Dock. The first time it opens, the settings window is shown.
 
