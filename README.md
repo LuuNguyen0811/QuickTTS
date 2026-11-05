@@ -43,15 +43,17 @@ The menu item **Open Permission Settings** opens those panes. If the shortcut st
 
 ## Rebuild the disk image
 
+From this repository, `package.sh` uses `.venv`, downloads any model file that is missing or not a real weight file, builds the app, and writes `QuickTTS.dmg` here.
+
 ```sh
-~/kokoro-tts/package.sh
+./package.sh
 ```
 
 ## Command-line server
 
-`start.sh` downloads the fast model and voices if `models/` does not already have them, then runs a local server on `127.0.0.1:8765` plus a separate hotkey listener. Do not run that at the same time as the menu bar app. Both would listen for a shortcut.
+From this repository, `start.sh` downloads the fast model and voices when `models/` does not already have usable copies, then runs a local server on `127.0.0.1:8765` plus a separate hotkey listener. The listener uses **Option+`** or **Control+Option+`**. Do not run that at the same time as the menu bar app. Both would listen for a shortcut.
 
 ```sh
-~/kokoro-tts/start.sh
-~/kokoro-tts/stop.sh
+./start.sh
+./stop.sh
 ```
