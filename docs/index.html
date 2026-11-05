@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QuickTTS</title>
+  <meta name="description" content="Speak selected text from the menu bar. On your Mac. No API key.">
+  <link rel="icon" href="icon.png">
+  <style>
+    :root {
+      color-scheme: dark;
+      --text: #f5f7fb;
+      --muted: #9aa4b5;
+      --faint: #6d7788;
+      --line: rgba(255, 255, 255, 0.08);
+      --blue: #7eb6ff;
+      --blue-deep: #3c86f6;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(ellipse 42rem 28rem at 50% 8rem, rgba(80, 150, 255, 0.22), transparent 68%),
+        #000;
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+
+    main {
+      width: min(40rem, calc(100% - 2.5rem));
+      margin: 0 auto;
+      padding: 5.5rem 0 4.5rem;
+    }
+
+    .mark {
+      display: block;
+      width: 7.5rem;
+      height: 7.5rem;
+      margin: 0 auto 1.75rem;
+      filter: drop-shadow(0 18px 40px rgba(70, 140, 255, 0.28));
+    }
+
+    h1 {
+      margin: 0;
+      text-align: center;
+      font-size: clamp(2.6rem, 6vw, 3.4rem);
+      font-weight: 620;
+      letter-spacing: -0.045em;
+    }
+
+    .lede {
+      margin: 0.85rem auto 0;
+      max-width: 36rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: 1.12rem;
+      letter-spacing: -0.015em;
+    }
+
+    .download {
+      display: flex;
+      width: fit-content;
+      margin: 2.1rem auto 0;
+      padding: 0.85rem 1.35rem;
+      border-radius: 999px;
+      background: linear-gradient(180deg, #8ec4ff 0%, var(--blue-deep) 100%);
+      color: #04101f;
+      text-decoration: none;
+      font-weight: 630;
+      letter-spacing: -0.02em;
+      box-shadow: 0 10px 30px rgba(60, 134, 246, 0.35);
+    }
+
+    .download:hover { filter: brightness(1.06); }
+    .download:focus-visible {
+      outline: 2px solid var(--blue);
+      outline-offset: 3px;
+    }
+
+    .meta {
+      margin: 0.8rem 0 0;
+      text-align: center;
+      color: var(--faint);
+      font-size: 0.86rem;
+    }
+
+    .points {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.75rem;
+      margin: 3rem 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .points li {
+      margin: 0;
+      padding: 1rem 0.95rem 1.05rem;
+      border: 1px solid var(--line);
+      border-radius: 1rem;
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .points strong {
+      display: block;
+      margin-bottom: 0.3rem;
+      font-size: 0.95rem;
+      letter-spacing: -0.02em;
+    }
+
+    .points span {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .install {
+      margin-top: 2.75rem;
+      padding-top: 1.75rem;
+      border-top: 1px solid var(--line);
+    }
+
+    h2 {
+      margin: 0 0 0.9rem;
+      font-size: 0.78rem;
+      font-weight: 620;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--faint);
+    }
+
+    ol {
+      margin: 0;
+      padding-left: 1.2rem;
+      color: var(--text);
+    }
+
+    li + li { margin-top: 0.45rem; }
+
+    .note {
+      margin: 1.15rem 0 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    @media (max-width: 680px) {
+      main { padding-top: 3.5rem; }
+      .points { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <img class="mark" src="icon.png" alt="" width="2048" height="2048">
+    <h1>QuickTTS</h1>
+    <p class="lede">Speak selected text from the menu bar. On your Mac. No API key.</p>
+    <a class="download" href="https://github.com/LuuNguyen0811/QuickTTS/releases/download/v1.0.0/QuickTTS.dmg">Download for macOS</a>
+    <p class="meta">Apple silicon · about 451 MB</p>
+
+    <ul class="points">
+      <li>
+        <strong>Menu bar only</strong>
+        <span>A speaker icon in the menu bar. It does not stay in the Dock.</span>
+      </li>
+      <li>
+        <strong>Option+`</strong>
+        <span>The default shortcut speaks whatever text is selected.</span>
+      </li>
+      <li>
+        <strong>Two qualities</strong>
+        <span>Pick a voice, then fast or best quality. Speech stays on this Mac.</span>
+      </li>
+    </ul>
+
+    <section class="install">
+      <h2>Install</h2>
+      <ol>
+        <li>Open <strong>QuickTTS.dmg</strong>.</li>
+        <li>Drag <strong>QuickTTS</strong> onto <strong>Applications</strong>.</li>
+        <li>Open <strong>QuickTTS</strong> from Applications.</li>
+        <li>If macOS says it cannot open the app, right-click QuickTTS, choose <strong>Open</strong>, then <strong>Open</strong> again. The app is not notarized with Apple.</li>
+      </ol>
+      <p class="note">Allow QuickTTS once under <strong>System Settings → Privacy &amp; Security → Accessibility</strong> and <strong>Input Monitoring</strong>. That lets the shortcut read the selection in every app.</p>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,12 +1,16 @@
 # QuickTTS
 
+## Download
+
+[https://luunguyen0811.github.io/QuickTTS/](https://luunguyen0811.github.io/QuickTTS/)
+
 A menu bar app that speaks selected text with Kokoro, on this Mac, with no API key.
 
 The speech models are not stored in git. The first run downloads them from the Kokoro ONNX 1.1 release: about 140 MB for the fast model and voices, and another 326 MB if you use the full-quality model or build the app. Later runs reuse the files in `models/`. The built app and disk image are not in git; `package.sh` creates them.
 
 The disk image is:
 
-`/Users/luunguyen/kokoro-tts/QuickTTS.dmg`
+[https://luunguyen0811.github.io/QuickTTS/](https://luunguyen0811.github.io/QuickTTS/)
 
 ## Install
 
