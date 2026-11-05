@@ -117,10 +117,55 @@
       font-size: 0.9rem;
     }
 
+    .demo,
     .install {
       margin-top: 2.75rem;
       padding-top: 1.75rem;
       border-top: 1px solid var(--line);
+    }
+
+    .sentence {
+      margin: 0 0 1rem;
+      color: var(--text);
+      font-size: 1.05rem;
+      letter-spacing: -0.015em;
+    }
+
+    .clips {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      border: 1px solid var(--line);
+      border-radius: 1rem;
+      background: rgba(255, 255, 255, 0.03);
+      overflow: hidden;
+    }
+
+    .clips li {
+      display: grid;
+      grid-template-columns: 11.5rem 1fr;
+      gap: 1rem;
+      align-items: center;
+      margin: 0;
+      padding: 0.85rem 1rem;
+    }
+
+    .clips li + li { border-top: 1px solid var(--line); }
+
+    .who strong {
+      display: block;
+      font-size: 0.95rem;
+      letter-spacing: -0.02em;
+    }
+
+    .who span {
+      color: var(--muted);
+      font-size: 0.86rem;
+    }
+
+    audio {
+      width: 100%;
+      height: 2rem;
     }
 
     h2 {
@@ -138,7 +183,7 @@
       color: var(--text);
     }
 
-    li + li { margin-top: 0.45rem; }
+    ol li + li { margin-top: 0.45rem; }
 
     .note {
       margin: 1.15rem 0 0;
@@ -149,6 +194,7 @@
     @media (max-width: 680px) {
       main { padding-top: 3.5rem; }
       .points { grid-template-columns: 1fr; }
+      .clips li { grid-template-columns: 1fr; gap: 0.45rem; }
     }
   </style>
 </head>
@@ -174,6 +220,35 @@
         <span>Pick a voice, then fast or best quality. Speech stays on this Mac.</span>
       </li>
     </ul>
+
+    <section class="demo">
+      <h2>Hear it</h2>
+      <p class="sentence">“QuickTTS reads the words you select, straight from the menu bar.”</p>
+      <ul class="clips">
+        <li>
+          <div class="who">
+            <strong>Female-Heart</strong>
+            <span>American · default</span>
+          </div>
+          <audio controls preload="metadata" src="demo/heart.wav"></audio>
+        </li>
+        <li>
+          <div class="who">
+            <strong>Male-Eric</strong>
+            <span>American</span>
+          </div>
+          <audio controls preload="metadata" src="demo/eric.wav"></audio>
+        </li>
+        <li>
+          <div class="who">
+            <strong>Female-Emma</strong>
+            <span>British</span>
+          </div>
+          <audio controls preload="metadata" src="demo/emma.wav"></audio>
+        </li>
+      </ul>
+      <p class="note">Same sentence, best-quality model. This is the quality the app uses by default.</p>
+    </section>
 
     <section class="install">
       <h2>Install</h2>
