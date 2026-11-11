@@ -61,6 +61,24 @@ MODIFIER_BITS = (
     ("shift", SHIFT, "⇧"),
     ("command", COMMAND, "⌘"),
 )
+MENU_KEYS = {
+    18: "1",
+    19: "2",
+    20: "3",
+    21: "4",
+    23: "5",
+    22: "6",
+    26: "7",
+    28: "8",
+    83: "1",
+    84: "2",
+    85: "3",
+    86: "4",
+    87: "5",
+    88: "6",
+    89: "7",
+    91: "8",
+}
 MODEL_CHOICES = (
     ("int8", "Fast (int8)"),
     ("fp32", "Best quality (full)"),
@@ -461,6 +479,9 @@ class KokoroApp(NSObject):
         self._recording = False
         self._monitor = None
         self._copy = None
+        self._menu_proc = None
+        self._menu_open = False
+        self._menu_text = ""
         self.status = None
         self._idle_image = None
         self._speak_frames = None
@@ -561,7 +582,7 @@ class KokoroApp(NSObject):
         header.setEnabled_(False)
         menu.addItem_(header)
         speak = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Speak Selection", "speakSelection:", ""
+            "Selection actions", "speakSelection:", ""
         )
         speak.setTarget_(self)
         speak.setEnabled_(self.engine.ready)
@@ -659,6 +680,7 @@ class KokoroApp(NSObject):
     @objc.python_method
     def stop_speech(self):
         self._copy = None
+        self._close_menu()
         self.player.stop()
         release_memory()
         self._end_speaking_animation()
@@ -669,14 +691,188 @@ class KokoroApp(NSObject):
     def handle_hotkey(self):
         if self._recording:
             return
+        if self._menu_open:
+            self._close_menu()
+            return
         text = hotkey.ax_selected_text().strip()
         if text:
-            threading.Thread(target=self.speak, args=(text,), daemon=True).start()
+            self._open_menu(text)
             return
         if self.player.busy():
             self.stop_speech()
             return
         self._begin_copy()
+
+    @objc.python_method
+    def _menu_binary(self) -> Path:
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent / "QuickTTSMenu"
+        return Path(__file__).resolve().parent / "helper" / "QuickTTSMenu"
+
+    @objc.python_method
+    def _ensure_menu(self) -> None:
+        proc = self._menu_proc
+        if proc is not None and proc.poll() is None:
+            return
+        path = self._menu_binary()
+        if not path.is_file():
+            log(f"menu helper missing: {path}")
+            self._menu_proc = None
+            return
+        proc = subprocess.Popen(
+            [str(path)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+        )
+        self._menu_proc = proc
+        threading.Thread(target=self._read_menu, args=(proc,), daemon=True).start()
+        threading.Thread(target=self._drain_menu_error, args=(proc,), daemon=True).start()
+
+    @objc.python_method
+    def _menu_send(self, payload: dict) -> None:
+        proc = self._menu_proc
+        if proc is None or proc.stdin is None or proc.poll() is not None:
+            return
+        try:
+            proc.stdin.write((json.dumps(payload) + "\n").encode())
+            proc.stdin.flush()
+        except Exception:
+            log(traceback.format_exc())
+
+    @objc.python_method
+    def _read_menu(self, proc: subprocess.Popen) -> None:
+        stream = proc.stdout
+        if stream is None:
+            return
+        for raw in stream:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                log(f"menu: {line}")
+                continue
+            AppHelper.callAfter(lambda event=event: self._on_menu_event(event))
+        AppHelper.callAfter(lambda: self._menu_exited(proc))
+
+    @objc.python_method
+    def _drain_menu_error(self, proc: subprocess.Popen) -> None:
+        stream = proc.stderr
+        if stream is None:
+            return
+        for raw in stream:
+            line = raw.decode("utf-8", "replace").strip()
+            if line:
+                log(f"menu: {line}")
+
+    @objc.python_method
+    def _menu_exited(self, proc: subprocess.Popen) -> None:
+        if self._menu_proc is proc:
+            self._menu_proc = None
+            self._menu_open = False
+
+    @objc.python_method
+    def _open_menu(self, text: str) -> None:
+        text = text.strip()
+        if not text:
+            NSBeep()
+            return
+        if len(text) > MAX_CHARS:
+            text = text[:MAX_CHARS]
+        self._ensure_menu()
+        if self._menu_proc is None or self._menu_proc.poll() is not None:
+            NSBeep()
+            self.set_status("The action menu could not open.")
+            return
+        self._menu_text = text
+        language = self.config.get("translateLanguage")
+        payload = {"cmd": "show", "text": text}
+        if isinstance(language, str) and language:
+            payload["translateLanguage"] = language
+        self._menu_open = True
+        self._menu_send(payload)
+
+    @objc.python_method
+    def _close_menu(self) -> None:
+        if not self._menu_open and (
+            self._menu_proc is None or self._menu_proc.poll() is not None
+        ):
+            self._menu_open = False
+            return
+        self._menu_open = False
+        self._menu_send({"cmd": "dismiss"})
+
+    @objc.python_method
+    def _copy_text(self, text: str) -> None:
+        pasteboard = NSPasteboard.generalPasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString_forType_(text, NSPasteboardTypeString)
+
+    @objc.python_method
+    def _replace_selection(self, text: str) -> bool:
+        if not text or not hotkey.ax_trusted():
+            return False
+        system = ApplicationServices.AXUIElementCreateSystemWide()
+        ApplicationServices.AXUIElementSetMessagingTimeout(system, 0.4)
+        focused = hotkey._ax_value(system, ApplicationServices.kAXFocusedUIElementAttribute)
+        if focused is None:
+            return False
+        ApplicationServices.AXUIElementSetMessagingTimeout(focused, 0.4)
+        attribute = ApplicationServices.kAXSelectedTextAttribute
+        try:
+            result = ApplicationServices.AXUIElementIsAttributeSettable(
+                focused, attribute, None
+            )
+        except Exception:
+            log(traceback.format_exc())
+            return False
+        settable = False
+        if isinstance(result, tuple):
+            if result and int(result[0] or 0) == 0 and len(result) > 1:
+                settable = bool(result[1])
+        else:
+            settable = bool(result)
+        if not settable:
+            return False
+        error = ApplicationServices.AXUIElementSetAttributeValue(focused, attribute, text)
+        if isinstance(error, tuple):
+            error = error[0] if error else 0
+        return int(error or 0) == 0
+
+    @objc.python_method
+    def _on_menu_event(self, event: dict) -> None:
+        kind = event.get("event")
+        if kind == "dismiss":
+            self._menu_open = False
+            return
+        if kind == "speak":
+            self._menu_open = False
+            text = self._menu_text
+            if text:
+                threading.Thread(target=self.speak, args=(text,), daemon=True).start()
+            return
+        if kind == "language":
+            code = event.get("code")
+            if isinstance(code, str) and code:
+                self.config["translateLanguage"] = code
+                save_config(self.config)
+            return
+        if kind == "replace":
+            self._menu_open = False
+            text = str(event.get("text") or "")
+            if self._replace_selection(text):
+                self.set_status("Replaced")
+            else:
+                self._copy_text(text)
+                self.set_status("Copied")
+            return
+        if kind == "copy":
+            self._menu_open = False
+            self._copy_text(str(event.get("text") or ""))
+            self.set_status("Copied")
 
     @objc.python_method
     def _begin_copy(self):
@@ -700,7 +896,7 @@ class KokoroApp(NSObject):
             hotkey._restore(pasteboard, self._copy["saved"])
             self._copy = None
             if text:
-                threading.Thread(target=self.speak, args=(text,), daemon=True).start()
+                self._open_menu(text)
             else:
                 NSBeep()
             return
@@ -722,6 +918,23 @@ class KokoroApp(NSObject):
         keycode = int(
             Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
         )
+        if self._menu_open:
+            repeat = int(
+                Quartz.CGEventGetIntegerValueField(
+                    event, Quartz.kCGKeyboardEventAutorepeat
+                )
+            )
+            if keycode == 53:
+                if not repeat:
+                    AppHelper.callAfter(self._close_menu)
+                return None
+            number = MENU_KEYS.get(keycode)
+            if number is not None:
+                if not repeat:
+                    AppHelper.callAfter(
+                        lambda number=number: self._menu_send({"cmd": "key", "key": number})
+                    )
+                return None
         if keycode != int(self.config["keyCode"]):
             return event
         flags = int(Quartz.CGEventGetFlags(event)) & (CONTROL | OPTION | SHIFT | COMMAND)
@@ -831,7 +1044,7 @@ class KokoroApp(NSObject):
         content.addSubview_(self.record_button)
 
         hint = self._label(
-            "Default shortcut is Option+`. On the ABC layout that key is a dead key, so add Control if it does not fire.",
+            "The shortcut opens the action menu. Default is Option+`. Add Control if that dead key does not fire.",
             24,
             78,
             472,
@@ -983,6 +1196,9 @@ class KokoroApp(NSObject):
     def quitApp_(self, sender):
         del sender
         self.player.stop()
+        proc = self._menu_proc
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
         NSApp.terminate_(None)
 
 

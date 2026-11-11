@@ -36,6 +36,15 @@ PLIST="$ROOT/dist/QuickTTS.app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :LSEnvironment dict" "$PLIST"
 /usr/libexec/PlistBuddy -c "Add :LSEnvironment:MallocLargeCache string 0" "$PLIST"
 /usr/libexec/PlistBuddy -c "Add :LSEnvironment:MallocSpaceEfficient string 1" "$PLIST"
+
+SDK="$(xcrun --sdk macosx --show-sdk-path)"
+xcrun --sdk macosx swiftc -O -swift-version 5 -target arm64-apple-macosx15.0 \
+  -sdk "$SDK" \
+  -framework SwiftUI -framework AppKit -framework Translation \
+  -Xlinker -weak_framework -Xlinker FoundationModels \
+  -o "$ROOT/helper/QuickTTSMenu" \
+  "$ROOT/helper/QuickTTSMenu.swift"
+cp "$ROOT/helper/QuickTTSMenu" "$ROOT/dist/QuickTTS.app/Contents/MacOS/QuickTTSMenu"
 codesign --force --deep --sign - "$ROOT/dist/QuickTTS.app"
 
 echo "self-test"
@@ -43,6 +52,10 @@ rm -f /tmp/kokoro-app-self-test.txt
 "$ROOT/dist/QuickTTS.app/Contents/MacOS/QuickTTS" --self-test
 cat /tmp/kokoro-app-self-test.txt
 
+if [[ "${SKIP_DMG:-0}" == 1 ]]; then
+  echo "built $ROOT/dist/QuickTTS.app"
+  exit 0
+fi
 STAGE="$(mktemp -d)"
 cp -R "$ROOT/dist/QuickTTS.app" "$STAGE/QuickTTS.app"
 ln -s /Applications "$STAGE/Applications"
