@@ -65,21 +65,22 @@ final class MenuModel: ObservableObject {
     @Published var translationConfig: TranslationSession.Configuration?
     @Published var languagesOpened = false
     @Published var hoverID: String?
+    @Published var selectionEditable = false
     var onDismiss: () -> Void = {}
     private var job = 0
     private var anchor = CGPoint.zero
 
-    func present(text: String, language: String?) {
+    func present(text: String, language: String?, editable: Bool) {
         job += 1
         sourceText = text
         translateLanguage = language
+        selectionEditable = editable
         showLanguages = false
         languagesOpened = false
         busyTitle = nil
         previewTitle = nil
         previewText = nil
         errorText = nil
-        translationConfig = nil
         anchor = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(anchor) } ?? NSScreen.main
         screenFrame = screen?.frame ?? .zero
@@ -169,12 +170,14 @@ final class MenuModel: ObservableObject {
         busyTitle = "Translating…"
         errorText = nil
         previewText = nil
-        var config = TranslationSession.Configuration(
-            source: nil,
-            target: Locale.Language(identifier: code)
-        )
-        config.invalidate()
-        translationConfig = config
+        previewTitle = nil
+        let target = Locale.Language(identifier: code)
+        if var config = translationConfig, config.target == target {
+            config.invalidate()
+            translationConfig = config
+        } else {
+            translationConfig = TranslationSession.Configuration(source: nil, target: target)
+        }
     }
 
     func applyTranslation(_ text: String, token: Int) {
@@ -220,12 +223,12 @@ final class MenuModel: ObservableObject {
 
     func wheelEntries() -> [WheelEntry] {
         if showLanguages {
-        return languages.map {
-            WheelEntry(id: $0.id, title: shortLanguage($0.id), symbol: "")
-        }
+            return languages.map {
+                WheelEntry(id: $0.id, title: shortLanguage($0.id), symbol: "", hubTitle: $0.title)
+            }
         }
         return actions.map {
-            WheelEntry(id: $0.id, title: $0.title, symbol: $0.symbol)
+            WheelEntry(id: $0.id, title: $0.title, symbol: $0.symbol, hubTitle: $0.title)
         }
     }
 
@@ -253,9 +256,13 @@ final class MenuModel: ObservableObject {
         var replace: CGRect?
         var copy: CGRect?
         if previewText != nil {
-            let row = CGRect(x: card.minX + 10, y: card.maxY - 52, width: card.width - 20, height: 40)
-            replace = CGRect(x: row.minX, y: row.minY, width: row.width / 2, height: row.height)
-            copy = CGRect(x: row.midX, y: row.minY, width: row.width / 2, height: row.height)
+            let row = CGRect(x: card.minX, y: card.maxY - 64, width: card.width, height: 64)
+            if selectionEditable {
+                replace = CGRect(x: row.minX, y: row.minY, width: row.width / 2, height: row.height)
+                copy = CGRect(x: row.midX, y: row.minY, width: row.width / 2, height: row.height)
+            } else {
+                copy = row
+            }
         }
         return MenuLayout(wheel: wheel, card: card, replace: replace, copy: copy)
     }
@@ -311,6 +318,7 @@ struct WheelEntry {
     let id: String
     let title: String
     let symbol: String
+    var hubTitle: String = ""
 }
 
 struct MenuLayout {
@@ -330,9 +338,9 @@ enum WheelHit {
 }
 
 enum WheelLayout {
-    static let outer: CGFloat = 102
-    static let inner: CGFloat = 30
-    static let hub: CGFloat = 44
+    static let outer: CGFloat = 78
+    static let inner: CGFloat = 40
+    static let hub: CGFloat = 40
     static let cardWidth: CGFloat = 280
 }
 
@@ -376,32 +384,48 @@ struct MenuRoot: View {
         let title = model.busyTitle ?? model.previewTitle ?? (model.errorText == nil ? "" : "Could not finish")
         let message = model.previewText ?? model.errorText
         VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
+            if message == nil {
+                VStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.regular)
+                        .tint(.white)
+                    if !title.isEmpty {
+                        Text(title)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.9))
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
             if let message {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
                 Text(message)
                     .font(.system(size: 13))
+                    .foregroundStyle(.white.opacity(0.88))
                     .lineLimit(6)
                     .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                ProgressView()
-                    .controlSize(.small)
             }
             Spacer(minLength: 0)
             if model.previewText != nil {
                 HStack(spacing: 8) {
-                    Text("Replace")
-                        .frame(maxWidth: .infinity)
+                    if model.selectionEditable {
+                        Text("Replace")
+                            .frame(maxWidth: .infinity)
+                    }
                     Text("Copy")
                         .frame(maxWidth: .infinity)
                 }
                 .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white)
                 .frame(height: 32)
+                .background(Color.white.opacity(0.14), in: Capsule())
             }
         }
         .padding(14)
         .frame(width: WheelLayout.cardWidth, height: model.previewText != nil || model.errorText != nil ? 176 : 84)
-        .modifier(GlassChrome(shape: RoundedRectangle(cornerRadius: 18, style: .continuous)))
+        .modifier(GlassChrome(shape: RoundedRectangle(cornerRadius: 22, style: .continuous)))
     }
 }
 
@@ -410,64 +434,131 @@ struct ActionWheel: View {
     let hoverID: String?
     let sprung: Bool
 
+    private var hubText: String {
+        guard let hoverID, let entry = entries.first(where: { $0.id == hoverID }) else {
+            return "Close"
+        }
+        return entry.hubTitle.isEmpty ? entry.title : entry.hubTitle
+    }
+
     var body: some View {
         let count = max(entries.count, 1)
         let sweep = 360.0 / Double(count)
+        let diameter = WheelLayout.outer * 2
         ZStack {
             Circle()
-                .fill(Color(white: 0.86))
-                .frame(width: WheelLayout.outer * 2, height: WheelLayout.outer * 2)
+                .fill(Color.black.opacity(0.42))
+                .frame(width: diameter, height: diameter)
+                .modifier(LiquidGlass(shape: Circle()))
+            Circle()
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.55),
+                            Color.white.opacity(0.08),
+                            Color.white.opacity(0.22),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
+                .frame(width: diameter, height: diameter)
+            RingDividers(count: count)
+                .stroke(Color.white.opacity(0.16), lineWidth: 0.7)
+                .frame(width: diameter, height: diameter)
             ForEach(Array(entries.enumerated()), id: \.offset) { index, entry in
-                let start = -90.0 - sweep / 2 + Double(index) * sweep + 1.4
-                let end = start + sweep - 2.8
+                let start = -90.0 - sweep / 2 + Double(index) * sweep + 1.2
+                let end = start + sweep - 2.4
                 let hovered = hoverID == entry.id
-                SliceShape(start: .degrees(start), end: .degrees(end))
-                    .fill(hovered ? Color(red: 0.22, green: 0.48, blue: 0.90).opacity(0.34) : Color.white.opacity(0.97))
-                    .frame(width: WheelLayout.outer * 2, height: WheelLayout.outer * 2)
+                if hovered {
+                    SliceShape(start: .degrees(start), end: .degrees(end))
+                        .fill(Color.white.opacity(0.20))
+                        .frame(width: diameter, height: diameter)
+                    RimArc(start: .degrees(start + 4), end: .degrees(end - 4))
+                        .stroke(Color.white.opacity(0.92), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                        .frame(width: diameter, height: diameter)
+                }
                 entryLabel(entry, start: start, end: end, hovered: hovered)
             }
             Circle()
-                .fill(
-                    RadialGradient(
-                        colors: [Color(white: 0.98), Color(white: 0.76)],
-                        center: .init(x: 0.4, y: 0.35),
-                        startRadius: 2,
-                        endRadius: 46
-                    )
-                )
+                .fill(Color.black.opacity(0.62))
                 .frame(width: WheelLayout.hub * 2, height: WheelLayout.hub * 2)
-                .shadow(color: .black.opacity(0.16), radius: 5, y: 2)
-            Image(systemName: "xmark")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(Color(red: 0.20, green: 0.27, blue: 0.35))
+                .modifier(LiquidGlass(shape: Circle()))
+            Circle()
+                .stroke(Color.white.opacity(0.16), lineWidth: 0.6)
+                .frame(width: WheelLayout.hub * 2, height: WheelLayout.hub * 2)
+            VStack(spacing: 4) {
+                if hoverID == nil {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                Text(hubText)
+                    .font(.system(size: hoverID == nil ? 9 : 11, weight: .semibold))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.7)
+                    .multilineTextAlignment(.center)
+            }
+            .foregroundStyle(.white.opacity(hoverID == nil ? 0.72 : 0.96))
+            .frame(width: WheelLayout.hub * 2 - 18)
         }
-        .frame(width: WheelLayout.outer * 2, height: WheelLayout.outer * 2)
-        .shadow(color: .black.opacity(0.16), radius: 14, y: 6)
-        .scaleEffect(sprung ? 1 : 0.12)
-        .animation(.spring(response: 0.38, dampingFraction: 0.72), value: sprung)
-        .animation(.easeOut(duration: 0.12), value: hoverID)
+        .frame(width: diameter, height: diameter)
+        .shadow(color: .black.opacity(0.35), radius: 22, y: 10)
+        .scaleEffect(sprung ? 1 : 0.86)
+        .animation(.spring(response: 0.42, dampingFraction: 0.78), value: sprung)
+        .animation(.easeOut(duration: 0.14), value: hoverID)
         .allowsHitTesting(false)
     }
 
     private func entryLabel(_ entry: WheelEntry, start: Double, end: Double, hovered: Bool) -> some View {
         let mid = (start + end) / 2 * .pi / 180
-        let radius = (WheelLayout.inner + WheelLayout.outer) / 2 + 6
-        let color = hovered
-            ? Color(red: 0.08, green: 0.33, blue: 0.78)
-            : Color(red: 0.18, green: 0.25, blue: 0.33)
-        return VStack(spacing: 3) {
+        let radius = (WheelLayout.hub + WheelLayout.outer) / 2
+        return Group {
             if !entry.symbol.isEmpty {
                 Image(systemName: entry.symbol)
-                    .font(.system(size: entries.count > 4 ? 13 : 18, weight: .semibold))
+                    .font(.system(size: hovered ? 15 : 13, weight: hovered ? .semibold : .regular))
+            } else {
+                Text(entry.title)
+                    .font(.system(size: 9, weight: hovered ? .semibold : .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
-            Text(entry.title)
-                .font(.system(size: entries.count > 4 ? 10 : 11, weight: .medium))
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
         }
-        .foregroundStyle(color)
-        .frame(width: entries.count > 4 ? 58 : 78)
+        .foregroundStyle(.white.opacity(hovered ? 1 : 0.62))
+        .frame(width: entries.count > 4 ? 36 : 56)
+        .scaleEffect(hovered ? 1.06 : 1)
         .offset(x: cos(mid) * radius, y: sin(mid) * radius)
+    }
+}
+
+struct RingDividers: Shape {
+    var count: Int
+
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let outer = min(rect.width, rect.height) / 2
+        let inner = WheelLayout.hub / WheelLayout.outer * outer
+        let sweep = 360.0 / Double(max(count, 1))
+        var path = Path()
+        for index in 0..<max(count, 1) {
+            let radians = (-90.0 - sweep / 2 + Double(index) * sweep) * .pi / 180
+            path.move(to: CGPoint(x: center.x + cos(radians) * inner, y: center.y + sin(radians) * inner))
+            path.addLine(to: CGPoint(x: center.x + cos(radians) * (outer - 1), y: center.y + sin(radians) * (outer - 1)))
+        }
+        return path
+    }
+}
+
+struct RimArc: Shape {
+    var start: Angle
+    var end: Angle
+
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let radius = min(rect.width, rect.height) / 2 - 2.5
+        var path = Path()
+        path.addArc(center: center, radius: radius, startAngle: start, endAngle: end, clockwise: false)
+        return path
     }
 }
 
@@ -487,15 +578,23 @@ struct SliceShape: Shape {
     }
 }
 
+struct LiquidGlass<S: Shape>: ViewModifier {
+    let shape: S
+
+    func body(content: Content) -> some View {
+        content.modifier(GlassChrome(shape: shape))
+    }
+}
+
 struct GlassChrome<S: Shape>: ViewModifier {
     let shape: S
 
     func body(content: Content) -> some View {
         Group {
             if #available(macOS 26.0, *) {
-                content.glassEffect(.regular, in: shape)
+                content.glassEffect(.regular.tint(Color.black.opacity(0.55)).interactive(), in: shape)
             } else {
-                content.background(.thinMaterial, in: shape)
+                content.background(.ultraThinMaterial, in: shape)
             }
         }
     }
@@ -598,7 +697,8 @@ final class MenuController: NSObject, NSApplicationDelegate {
         case "show":
             let text = object["text"] as? String ?? ""
             let language = object["translateLanguage"] as? String
-            show(text: text, language: language)
+            let editable = object["editable"] as? Bool ?? false
+            show(text: text, language: language, editable: editable)
         case "key":
             if let key = object["key"] as? String {
                 model.press(key)
@@ -610,7 +710,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         }
     }
 
-    func show(text: String, language: String?) {
+    func show(text: String, language: String?, editable: Bool) {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
         guard let screen else { return }
@@ -628,6 +728,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
             next.hasShadow = false
             next.hidesOnDeactivate = false
             next.ignoresMouseEvents = false
+            next.becomesKeyOnlyIfNeeded = false
             next.isMovable = false
             next.acceptsMouseMovedEvents = true
             let root = MenuRoot(model: model)
@@ -640,7 +741,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
             panel = next
         }
         panel?.setFrame(screen.frame, display: true)
-        model.present(text: text, language: language)
+        model.present(text: text, language: language, editable: editable)
         panel?.orderFrontRegardless()
     }
 }

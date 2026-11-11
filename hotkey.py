@@ -16,7 +16,13 @@ from pathlib import Path
 
 import ApplicationServices
 import Quartz
-from AppKit import NSBundle, NSPasteboard, NSPasteboardItem, NSPasteboardTypeString
+from AppKit import (
+    NSBundle,
+    NSPasteboard,
+    NSPasteboardItem,
+    NSPasteboardTypeString,
+    NSWorkspace,
+)
 from CoreFoundation import (
     CFMachPortCreateRunLoopSource,
     CFRunLoopAddSource,
@@ -32,6 +38,7 @@ TTS_URL = "http://127.0.0.1:8765/tts"
 AFPLAY = "/usr/bin/afplay"
 GRAVE_KEY = 50
 C_KEY = 8
+V_KEY = 9
 COMMAND_KEY = 55
 COPY_TIMEOUT = 0.6
 PYTHON_APP = "/opt/homebrew/Cellar/python@3.12/3.12.11/Frameworks/Python.framework/Versions/3.12/Resources/Python.app"
@@ -61,6 +68,22 @@ def permission_text() -> str:
 
 def ax_trusted() -> bool:
     return bool(ApplicationServices.AXIsProcessTrusted())
+
+
+def enable_front_app_accessibility() -> None:
+    if not ax_trusted():
+        return
+    app = NSWorkspace.sharedWorkspace().frontmostApplication()
+    if app is None:
+        return
+    element = ApplicationServices.AXUIElementCreateApplication(app.processIdentifier())
+    ApplicationServices.AXUIElementSetMessagingTimeout(element, 0.3)
+    try:
+        ApplicationServices.AXUIElementSetAttributeValue(
+            element, "AXManualAccessibility", True
+        )
+    except Exception:
+        traceback.print_exc()
 
 
 def _ax_value(element, attribute):
@@ -126,16 +149,42 @@ def _post_key(source, keycode: int, key_down: bool, flags: int) -> None:
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
 
-def send_copy() -> None:
+def _send_command_key(keycode: int) -> None:
     source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
     command = Quartz.kCGEventFlagMaskCommand
     _post_key(source, COMMAND_KEY, True, command)
     time.sleep(0.01)
-    _post_key(source, C_KEY, True, command)
+    _post_key(source, keycode, True, command)
     time.sleep(0.01)
-    _post_key(source, C_KEY, False, command)
+    _post_key(source, keycode, False, command)
     time.sleep(0.01)
     _post_key(source, COMMAND_KEY, False, 0)
+
+
+def send_copy() -> None:
+    _send_command_key(C_KEY)
+
+
+def send_paste() -> None:
+    _send_command_key(V_KEY)
+
+
+def send_paste_to(pid: int) -> None:
+    source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
+    command = Quartz.kCGEventFlagMaskCommand
+
+    def post(keycode: int, key_down: bool, flags: int) -> None:
+        event = Quartz.CGEventCreateKeyboardEvent(source, keycode, key_down)
+        Quartz.CGEventSetFlags(event, flags)
+        Quartz.CGEventPostToPid(pid, event)
+
+    post(COMMAND_KEY, True, command)
+    time.sleep(0.02)
+    post(V_KEY, True, command)
+    time.sleep(0.02)
+    post(V_KEY, False, command)
+    time.sleep(0.02)
+    post(COMMAND_KEY, False, 0)
 
 
 def call_on_main(fn):

@@ -1,4 +1,5 @@
 .venv/
+.signing/
 models/*.onnx
 models/*.bin
 models/*.partial

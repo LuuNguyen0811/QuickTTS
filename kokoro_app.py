@@ -21,6 +21,7 @@ import numpy as np
 from AppKit import (
     NSApp,
     NSApplication,
+    NSApplicationActivateIgnoringOtherApps,
     NSApplicationActivationPolicyAccessory,
     NSBackingStoreBuffered,
     NSBeep,
@@ -39,6 +40,7 @@ from AppKit import (
     NSStatusBar,
     NSTextField,
     NSVariableStatusItemLength,
+    NSWorkspace,
     NSWindow,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskTitled,
@@ -50,6 +52,9 @@ import hotkey
 
 APP_NAME = "QuickTTS"
 MAX_CHARS = 4000
+TEXT_INPUT_ROLES = frozenset(
+    {"AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"}
+)
 GRAVE_KEY = 50
 CONTROL = Quartz.kCGEventFlagMaskControl
 OPTION = Quartz.kCGEventFlagMaskAlternate
@@ -482,6 +487,9 @@ class KokoroApp(NSObject):
         self._menu_proc = None
         self._menu_open = False
         self._menu_text = ""
+        self._source_app = None
+        self._replace_target = None
+        self._replace_range = None
         self.status = None
         self._idle_image = None
         self._speak_frames = None
@@ -499,7 +507,8 @@ class KokoroApp(NSObject):
         self._build_status_item()
         self._install_tap()
         self.start_load()
-        self._prompt_accessibility()
+        AppHelper.callLater(0.4, self._prompt_accessibility)
+        AppHelper.callLater(0.8, self._prompt_input_monitoring)
         if self.first_launch:
             self.show_settings()
 
@@ -511,6 +520,30 @@ class KokoroApp(NSObject):
             )
         except Exception:
             log(traceback.format_exc())
+
+    @objc.python_method
+    def _prompt_input_monitoring(self):
+        try:
+            granted = bool(Quartz.CGPreflightListenEventAccess())
+        except Exception:
+            log(traceback.format_exc())
+            return
+        log(f"input monitoring={granted}")
+        if granted:
+            return
+        try:
+            allowed = bool(Quartz.CGRequestListenEventAccess())
+            log(f"input monitoring request={allowed}")
+        except Exception:
+            log(traceback.format_exc())
+            allowed = False
+        if not allowed:
+            subprocess.Popen(
+                [
+                    "/usr/bin/open",
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+                ]
+            )
 
     @objc.python_method
     def _build_status_item(self):
@@ -694,6 +727,7 @@ class KokoroApp(NSObject):
         if self._menu_open:
             self._close_menu()
             return
+        hotkey.enable_front_app_accessibility()
         text = hotkey.ax_selected_text().strip()
         if text:
             self._open_menu(text)
@@ -789,7 +823,7 @@ class KokoroApp(NSObject):
             return
         self._menu_text = text
         language = self.config.get("translateLanguage")
-        payload = {"cmd": "show", "text": text}
+        payload = {"cmd": "show", "text": text, "editable": self._selection_is_editable()}
         if isinstance(language, str) and language:
             payload["translateLanguage"] = language
         self._menu_open = True
@@ -812,35 +846,211 @@ class KokoroApp(NSObject):
         pasteboard.setString_forType_(text, NSPasteboardTypeString)
 
     @objc.python_method
-    def _replace_selection(self, text: str) -> bool:
-        if not text or not hotkey.ax_trusted():
-            return False
+    def _focused_element(self):
+        if not hotkey.ax_trusted():
+            return None
         system = ApplicationServices.AXUIElementCreateSystemWide()
         ApplicationServices.AXUIElementSetMessagingTimeout(system, 0.4)
         focused = hotkey._ax_value(system, ApplicationServices.kAXFocusedUIElementAttribute)
         if focused is None:
-            return False
+            return None
         ApplicationServices.AXUIElementSetMessagingTimeout(focused, 0.4)
-        attribute = ApplicationServices.kAXSelectedTextAttribute
+        return focused
+
+    @objc.python_method
+    def _selection_is_editable(self) -> bool:
+        self._source_app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        target = self._editable_target()
+        self._replace_target = target
+        self._replace_range = None
+        if target is not None:
+            self._replace_range = hotkey._ax_value(
+                target, ApplicationServices.kAXSelectedTextRangeAttribute
+            )
+        return target is not None
+
+    @objc.python_method
+    def _attribute_is_settable(self, element, attribute) -> bool:
         try:
             result = ApplicationServices.AXUIElementIsAttributeSettable(
-                focused, attribute, None
+                element, attribute, None
             )
         except Exception:
             log(traceback.format_exc())
             return False
-        settable = False
         if isinstance(result, tuple):
-            if result and int(result[0] or 0) == 0 and len(result) > 1:
-                settable = bool(result[1])
-        else:
-            settable = bool(result)
-        if not settable:
+            return (
+                bool(result)
+                and int(result[0] or 0) == 0
+                and len(result) > 1
+                and bool(result[1])
+            )
+        return bool(result)
+
+    @objc.python_method
+    def _has_text_caret(self, element) -> bool:
+        value = hotkey._ax_value(
+            element, ApplicationServices.kAXInsertionPointLineNumberAttribute
+        )
+        try:
+            line = int(value)
+        except (TypeError, ValueError):
             return False
-        error = ApplicationServices.AXUIElementSetAttributeValue(focused, attribute, text)
+        return 0 <= line < 1_000_000
+
+    @objc.python_method
+    def _editable_in_chain(self, element):
+        current = element
+        for _ in range(10):
+            if current is None:
+                return None
+            role = hotkey._ax_value(current, ApplicationServices.kAXRoleAttribute)
+            role = str(role) if role else ""
+            writable = (
+                self._attribute_is_settable(
+                    current, ApplicationServices.kAXSelectedTextAttribute
+                )
+                or self._attribute_is_settable(
+                    current, ApplicationServices.kAXValueAttribute
+                )
+                or self._attribute_is_settable(
+                    current, ApplicationServices.kAXSelectedTextRangeAttribute
+                )
+            )
+            if role in TEXT_INPUT_ROLES and writable:
+                return current
+            if self._attribute_is_settable(
+                current, ApplicationServices.kAXSelectedTextAttribute
+            ):
+                return current
+            if role == "AXWebArea" and self._has_text_caret(current):
+                return current
+            if role in ("AXWindow", "AXApplication"):
+                return None
+            parent = hotkey._ax_value(current, ApplicationServices.kAXParentAttribute)
+            if parent is not None:
+                ApplicationServices.AXUIElementSetMessagingTimeout(parent, 0.25)
+            current = parent
+        return None
+
+    @objc.python_method
+    def _editable_target(self):
+        hotkey.enable_front_app_accessibility()
+        focused = self._focused_element()
+        if focused is None:
+            return None
+        target = self._editable_in_chain(focused)
+        if target is not None:
+            return target
+        current = focused
+        web = None
+        for _ in range(10):
+            if current is None:
+                break
+            role = hotkey._ax_value(current, ApplicationServices.kAXRoleAttribute)
+            if str(role or "") == "AXWebArea":
+                web = current
+                break
+            if str(role or "") in ("AXWindow", "AXApplication"):
+                break
+            current = hotkey._ax_value(current, ApplicationServices.kAXParentAttribute)
+        if web is None:
+            return None
+        try:
+            ApplicationServices.AXUIElementSetAttributeValue(
+                web, "AXEnhancedUserInterface", True
+            )
+        except Exception:
+            log(traceback.format_exc())
+            return None
+        return self._editable_in_chain(self._focused_element())
+
+    @objc.python_method
+    def _ax_error(self, error) -> int:
         if isinstance(error, tuple):
             error = error[0] if error else 0
-        return int(error or 0) == 0
+        try:
+            return int(error or 0)
+        except (TypeError, ValueError):
+            return -1
+
+    @objc.python_method
+    def _write_selected_text(self, target, text: str) -> bool:
+        try:
+            ApplicationServices.AXUIElementSetAttributeValue(
+                target, ApplicationServices.kAXFocusedAttribute, True
+            )
+        except Exception:
+            log(traceback.format_exc())
+        if self._replace_range is not None and self._attribute_is_settable(
+            target, ApplicationServices.kAXSelectedTextRangeAttribute
+        ):
+            ApplicationServices.AXUIElementSetAttributeValue(
+                target,
+                ApplicationServices.kAXSelectedTextRangeAttribute,
+                self._replace_range,
+            )
+        attribute = ApplicationServices.kAXSelectedTextAttribute
+        if self._attribute_is_settable(target, attribute):
+            error = self._ax_error(
+                ApplicationServices.AXUIElementSetAttributeValue(target, attribute, text)
+            )
+            current = hotkey._ax_value(target, attribute)
+            if error == 0 and (current is None or str(current) == text):
+                return True
+            if current is not None and str(current) == text:
+                return True
+        value = hotkey._ax_value(target, ApplicationServices.kAXValueAttribute)
+        if (
+            value is not None
+            and str(value) == self._menu_text
+            and self._attribute_is_settable(target, ApplicationServices.kAXValueAttribute)
+        ):
+            error = self._ax_error(
+                ApplicationServices.AXUIElementSetAttributeValue(
+                    target, ApplicationServices.kAXValueAttribute, text
+                )
+            )
+            if error == 0:
+                return True
+        return False
+
+    @objc.python_method
+    def _paste_into_source(self, text: str) -> None:
+        pasteboard = NSPasteboard.generalPasteboard()
+        saved = hotkey._snapshot(pasteboard)
+        self._copy_text(text)
+        app = self._source_app
+        pid = int(app.processIdentifier()) if app is not None else 0
+        if app is not None:
+            app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+
+        def paste() -> None:
+            if pid:
+                hotkey.send_paste_to(pid)
+            else:
+                hotkey.send_paste()
+
+            def restore() -> None:
+                hotkey._restore(NSPasteboard.generalPasteboard(), saved)
+
+            AppHelper.callLater(1.2, restore)
+
+        AppHelper.callLater(0.2, paste)
+
+    @objc.python_method
+    def _replace_selection(self, text: str) -> bool:
+        if not text:
+            return False
+        target = self._replace_target
+        if target is not None and self._write_selected_text(target, text):
+            log("replace wrote the selection")
+            return True
+        if target is None and self._source_app is None:
+            return False
+        log("replace pasting into the source app")
+        self._paste_into_source(text)
+        return True
 
     @objc.python_method
     def _on_menu_event(self, event: dict) -> None:
@@ -963,7 +1173,11 @@ class KokoroApp(NSObject):
             None,
         )
         if tap is None:
-            log("event tap was not created")
+            try:
+                granted = bool(Quartz.CGPreflightListenEventAccess())
+            except Exception:
+                granted = False
+            log(f"event tap was not created; input monitoring={granted}")
             self.rebuild_menu()
             AppHelper.callLater(3.0, self._install_tap)
             return
