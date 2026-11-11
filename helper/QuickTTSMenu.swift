@@ -37,6 +37,20 @@ private let languages: [LanguageChoice] = [
     LanguageChoice(id: "es", title: "Spanish"),
 ]
 
+private func shortLanguage(_ code: String) -> String {
+    switch code {
+    case "en": return "EN"
+    case "vi": return "VI"
+    case "ja": return "JA"
+    case "ko": return "KO"
+    case "zh-Hans": return "ZH"
+    case "fr": return "FR"
+    case "de": return "DE"
+    case "es": return "ES"
+    default: return code
+    }
+}
+
 final class MenuModel: ObservableObject {
     @Published var sourceText = ""
     @Published var translateLanguage: String?
@@ -50,6 +64,7 @@ final class MenuModel: ObservableObject {
     @Published var errorText: String?
     @Published var translationConfig: TranslationSession.Configuration?
     @Published var languagesOpened = false
+    @Published var hoverID: String?
     var onDismiss: () -> Void = {}
     private var job = 0
     private var anchor = CGPoint.zero
@@ -68,7 +83,8 @@ final class MenuModel: ObservableObject {
         anchor = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(anchor) } ?? NSScreen.main
         screenFrame = screen?.frame ?? .zero
-        center = shifted(anchor, radius: 118, screen: screen)
+        hoverID = nil
+        center = shifted(anchor, radius: WheelLayout.outer, screen: screen)
         opened = false
         DispatchQueue.main.async {
             self.opened = true
@@ -97,6 +113,7 @@ final class MenuModel: ObservableObject {
     }
 
     func run(_ id: String) {
+        guard busyTitle == nil, previewText == nil, errorText == nil else { return }
         switch id {
         case "speak":
             emit(["event": "speak"])
@@ -109,8 +126,7 @@ final class MenuModel: ObservableObject {
             if let code = translateLanguage, !code.isEmpty {
                 startTranslation(code)
             } else {
-                let screen = NSScreen.screens.first { $0.frame.contains(anchor) } ?? NSScreen.main
-                center = shifted(anchor, radius: 196, screen: screen)
+                hoverID = nil
                 showLanguages = true
                 languagesOpened = false
                 DispatchQueue.main.async {
@@ -202,6 +218,84 @@ final class MenuModel: ObservableObject {
         }
     }
 
+    func wheelEntries() -> [WheelEntry] {
+        if showLanguages {
+        return languages.map {
+            WheelEntry(id: $0.id, title: shortLanguage($0.id), symbol: "")
+        }
+        }
+        return actions.map {
+            WheelEntry(id: $0.id, title: $0.title, symbol: $0.symbol)
+        }
+    }
+
+    func layout(in size: CGSize) -> MenuLayout {
+        let wheel = CGPoint(
+            x: center.x - screenFrame.minX,
+            y: size.height - (center.y - screenFrame.minY)
+        )
+        let showing = busyTitle != nil || previewText != nil || errorText != nil
+        guard showing else {
+            return MenuLayout(wheel: wheel, card: nil, replace: nil, copy: nil)
+        }
+        let cardHeight: CGFloat = previewText != nil || errorText != nil ? 176 : 84
+        let below = wheel.y + WheelLayout.outer + 14 + cardHeight / 2
+        let cardY = below + cardHeight / 2 + 8 < size.height
+            ? below
+            : wheel.y - WheelLayout.outer - 14 - cardHeight / 2
+        let cardX = min(max(wheel.x, 150), max(size.width - 150, 150))
+        let card = CGRect(
+            x: cardX - WheelLayout.cardWidth / 2,
+            y: cardY - cardHeight / 2,
+            width: WheelLayout.cardWidth,
+            height: cardHeight
+        )
+        var replace: CGRect?
+        var copy: CGRect?
+        if previewText != nil {
+            let row = CGRect(x: card.minX + 10, y: card.maxY - 52, width: card.width - 20, height: 40)
+            replace = CGRect(x: row.minX, y: row.minY, width: row.width / 2, height: row.height)
+            copy = CGRect(x: row.midX, y: row.minY, width: row.width / 2, height: row.height)
+        }
+        return MenuLayout(wheel: wheel, card: card, replace: replace, copy: copy)
+    }
+
+    func hit(_ swiftPoint: CGPoint, in size: CGSize) -> WheelHit {
+        let placed = layout(in: size)
+        if let replace = placed.replace, replace.contains(swiftPoint) {
+            return .replace
+        }
+        if let copy = placed.copy, copy.contains(swiftPoint) {
+            return .copy
+        }
+        if let card = placed.card, card.contains(swiftPoint) {
+            return .card
+        }
+        let dx = swiftPoint.x - placed.wheel.x
+        let dy = swiftPoint.y - placed.wheel.y
+        let distance = hypot(dx, dy)
+        if distance <= WheelLayout.hub {
+            return .center
+        }
+        if distance > WheelLayout.outer {
+            return .outside
+        }
+        let entries = wheelEntries()
+        guard !entries.isEmpty else { return .outside }
+        let sweep = 360 / CGFloat(entries.count)
+        let fromTop = atan2(dy, dx) * 180 / .pi + 90
+        var shifted = fromTop + sweep / 2
+        shifted = shifted.truncatingRemainder(dividingBy: 360)
+        if shifted < 0 {
+            shifted += 360
+        }
+        if shifted >= 360 {
+            shifted -= 360
+        }
+        let index = Int(shifted / sweep) % entries.count
+        return .slice(entries[index].id)
+    }
+
     private func shifted(_ point: CGPoint, radius: CGFloat, screen: NSScreen?) -> CGPoint {
         guard let screen else { return point }
         let frame = screen.visibleFrame
@@ -213,44 +307,51 @@ final class MenuModel: ObservableObject {
     }
 }
 
+struct WheelEntry {
+    let id: String
+    let title: String
+    let symbol: String
+}
+
+struct MenuLayout {
+    var wheel: CGPoint
+    var card: CGRect?
+    var replace: CGRect?
+    var copy: CGRect?
+}
+
+enum WheelHit {
+    case slice(String)
+    case center
+    case outside
+    case card
+    case replace
+    case copy
+}
+
+enum WheelLayout {
+    static let outer: CGFloat = 102
+    static let inner: CGFloat = 30
+    static let hub: CGFloat = 44
+    static let cardWidth: CGFloat = 280
+}
+
 struct MenuRoot: View {
     @ObservedObject var model: MenuModel
 
     var body: some View {
         GeometryReader { geo in
-            let local = localPoint(model.center, in: geo.size)
+            let placed = model.layout(in: geo.size)
             ZStack {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        model.dismiss()
-                    }
-                buttons(
-                    actions.map { ($0.id, $0.title, $0.symbol, $0.key) },
-                    radius: 118,
-                    sprung: model.opened,
-                    at: local
-                ) { id in
-                    model.run(id)
-                }
-                if model.showLanguages {
-                    buttons(
-                        languages.enumerated().map { index, language in
-                            (language.id, language.title, "character.bubble", String(index + 1))
-                        },
-                        radius: 196,
-                        sprung: model.languagesOpened,
-                        at: local
-                    ) { id in
-                        model.chooseLanguage(id)
-                    }
-                }
-                if let busy = model.busyTitle {
-                    card(title: busy, text: nil, at: local, offset: 168, in: geo.size)
-                } else if let text = model.previewText {
-                    card(title: model.previewTitle ?? "Result", text: text, at: local, offset: 168, in: geo.size)
-                } else if let error = model.errorText {
-                    card(title: "Could not finish", text: error, at: local, offset: 168, in: geo.size)
+                ActionWheel(
+                    entries: model.wheelEntries(),
+                    hoverID: model.hoverID,
+                    sprung: model.opened
+                )
+                .position(placed.wheel)
+                if let card = placed.card {
+                    cardView
+                        .position(x: card.midX, y: card.midY)
                 }
             }
         }
@@ -270,101 +371,119 @@ struct MenuRoot: View {
         }
     }
 
-    private func localPoint(_ point: CGPoint, in size: CGSize) -> CGPoint {
-        let origin = model.screenFrame.origin
-        return CGPoint(
-            x: point.x - origin.x,
-            y: size.height - (point.y - origin.y)
-        )
-    }
-
-    private func buttons(
-        _ items: [(String, String, String, String)],
-        radius: CGFloat,
-        sprung: Bool,
-        at center: CGPoint,
-        onTap: @escaping (String) -> Void
-    ) -> some View {
-        ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-            let count = CGFloat(max(items.count, 1))
-            let angle = (CGFloat.pi / 2) - (CGFloat(index) * (2 * CGFloat.pi / count))
-            Orb(title: item.1, symbol: item.2, key: item.3) {
-                onTap(item.0)
-            }
-            .scaleEffect(sprung ? 1 : 0.15)
-            .position(
-                x: center.x + (sprung ? cos(angle) * radius : 0),
-                y: center.y + (sprung ? sin(angle) * radius : 0)
-            )
-            .animation(
-                .spring(response: 0.42, dampingFraction: 0.68).delay(0.045 * Double(index)),
-                value: sprung
-            )
-        }
-    }
-
     @ViewBuilder
-    private func card(title: String, text: String?, at center: CGPoint, offset: CGFloat, in size: CGSize) -> some View {
+    private var cardView: some View {
+        let title = model.busyTitle ?? model.previewTitle ?? (model.errorText == nil ? "" : "Could not finish")
+        let message = model.previewText ?? model.errorText
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .font(.system(size: 13, weight: .semibold))
-            if let text {
-                Text(text)
+            if let message {
+                Text(message)
                     .font(.system(size: 13))
-                    .lineLimit(8)
+                    .lineLimit(6)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 ProgressView()
                     .controlSize(.small)
             }
+            Spacer(minLength: 0)
             if model.previewText != nil {
                 HStack(spacing: 8) {
-                    Button("Replace") { model.replace() }
-                    Button("Copy") { model.copy() }
+                    Text("Replace")
+                        .frame(maxWidth: .infinity)
+                    Text("Copy")
+                        .frame(maxWidth: .infinity)
                 }
+                .font(.system(size: 13, weight: .semibold))
+                .frame(height: 32)
             }
         }
         .padding(14)
-        .frame(width: 280)
+        .frame(width: WheelLayout.cardWidth, height: model.previewText != nil || model.errorText != nil ? 176 : 84)
         .modifier(GlassChrome(shape: RoundedRectangle(cornerRadius: 18, style: .continuous)))
-        .position(x: min(max(center.x, 150), max(size.width - 150, 150)), y: cardY(center.y, offset: offset, height: size.height))
-    }
-
-    private func cardY(_ y: CGFloat, offset: CGFloat, height: CGFloat) -> CGFloat {
-        let below = y + offset
-        if below + 90 < height {
-            return below
-        }
-        return max(90, y - offset)
     }
 }
 
-struct Orb: View {
-    let title: String
-    let symbol: String
-    let key: String
-    let action: () -> Void
-    @State private var hover = false
+struct ActionWheel: View {
+    let entries: [WheelEntry]
+    let hoverID: String?
+    let sprung: Bool
 
     var body: some View {
-        Button(action: action) {
-            VStack(spacing: 2) {
-                Image(systemName: symbol)
-                    .font(.system(size: 18, weight: .semibold))
-                Text(title)
-                    .font(.system(size: 10, weight: .medium))
-                    .lineLimit(1)
-                Text(key)
-                    .font(.system(size: 9, weight: .semibold))
-                    .opacity(0.7)
+        let count = max(entries.count, 1)
+        let sweep = 360.0 / Double(count)
+        ZStack {
+            Circle()
+                .fill(Color(white: 0.86))
+                .frame(width: WheelLayout.outer * 2, height: WheelLayout.outer * 2)
+            ForEach(Array(entries.enumerated()), id: \.offset) { index, entry in
+                let start = -90.0 - sweep / 2 + Double(index) * sweep + 1.4
+                let end = start + sweep - 2.8
+                let hovered = hoverID == entry.id
+                SliceShape(start: .degrees(start), end: .degrees(end))
+                    .fill(hovered ? Color(red: 0.22, green: 0.48, blue: 0.90).opacity(0.34) : Color.white.opacity(0.97))
+                    .frame(width: WheelLayout.outer * 2, height: WheelLayout.outer * 2)
+                entryLabel(entry, start: start, end: end, hovered: hovered)
             }
-            .frame(width: 76, height: 76)
-            .modifier(GlassChrome(shape: Circle()))
-            .scaleEffect(hover ? 1.16 : 1)
-            .animation(.spring(response: 0.22, dampingFraction: 0.7), value: hover)
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [Color(white: 0.98), Color(white: 0.76)],
+                        center: .init(x: 0.4, y: 0.35),
+                        startRadius: 2,
+                        endRadius: 46
+                    )
+                )
+                .frame(width: WheelLayout.hub * 2, height: WheelLayout.hub * 2)
+                .shadow(color: .black.opacity(0.16), radius: 5, y: 2)
+            Image(systemName: "xmark")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(Color(red: 0.20, green: 0.27, blue: 0.35))
         }
-        .buttonStyle(.plain)
-        .onHover { hover = $0 }
+        .frame(width: WheelLayout.outer * 2, height: WheelLayout.outer * 2)
+        .shadow(color: .black.opacity(0.16), radius: 14, y: 6)
+        .scaleEffect(sprung ? 1 : 0.12)
+        .animation(.spring(response: 0.38, dampingFraction: 0.72), value: sprung)
+        .animation(.easeOut(duration: 0.12), value: hoverID)
+        .allowsHitTesting(false)
+    }
+
+    private func entryLabel(_ entry: WheelEntry, start: Double, end: Double, hovered: Bool) -> some View {
+        let mid = (start + end) / 2 * .pi / 180
+        let radius = (WheelLayout.inner + WheelLayout.outer) / 2 + 6
+        let color = hovered
+            ? Color(red: 0.08, green: 0.33, blue: 0.78)
+            : Color(red: 0.18, green: 0.25, blue: 0.33)
+        return VStack(spacing: 3) {
+            if !entry.symbol.isEmpty {
+                Image(systemName: entry.symbol)
+                    .font(.system(size: entries.count > 4 ? 13 : 18, weight: .semibold))
+            }
+            Text(entry.title)
+                .font(.system(size: entries.count > 4 ? 10 : 11, weight: .medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .foregroundStyle(color)
+        .frame(width: entries.count > 4 ? 58 : 78)
+        .offset(x: cos(mid) * radius, y: sin(mid) * radius)
+    }
+}
+
+struct SliceShape: Shape {
+    var start: Angle
+    var end: Angle
+
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let outer = min(rect.width, rect.height) / 2
+        let inner = WheelLayout.inner / WheelLayout.outer * outer
+        var path = Path()
+        path.addArc(center: center, radius: outer, startAngle: start, endAngle: end, clockwise: false)
+        path.addArc(center: center, radius: inner, startAngle: end, endAngle: start, clockwise: true)
+        path.closeSubpath()
+        return path
     }
 }
 
@@ -382,30 +501,79 @@ struct GlassChrome<S: Shape>: ViewModifier {
     }
 }
 
-final class HitHostingView<Content: View>: NSHostingView<Content> {
-    var onBackgroundClick: (() -> Void)?
+final class WheelHostingView: NSHostingView<MenuRoot> {
+    var model: MenuModel?
+    private var tracking: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking {
+            removeTrackingArea(tracking)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.activeAlways, .mouseMoved, .mouseEnteredAndExited, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        tracking = area
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        let hit = super.hitTest(point)
-        if hit == nil || hit === self {
-            return self
+        bounds.contains(point) ? self : nil
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard let model else { return }
+        if case .slice(let id) = model.hit(swiftLocation(event), in: bounds.size) {
+            model.hoverID = id
+        } else {
+            model.hoverID = nil
         }
-        return hit
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        model?.hoverID = nil
     }
 
     override func mouseDown(with event: NSEvent) {
-        onBackgroundClick?()
+        guard let model else { return }
+        switch model.hit(swiftLocation(event), in: bounds.size) {
+        case .slice(let id):
+            if model.showLanguages {
+                model.chooseLanguage(id)
+            } else {
+                model.run(id)
+            }
+        case .replace:
+            model.replace()
+        case .copy:
+            model.copy()
+        case .card:
+            break
+        case .center, .outside:
+            model.dismiss()
+        }
     }
 
     override func rightMouseDown(with event: NSEvent) {
-        onBackgroundClick?()
+        model?.dismiss()
+    }
+
+    private func swiftLocation(_ event: NSEvent) -> CGPoint {
+        let point = convert(event.locationInWindow, from: nil)
+        if isFlipped {
+            return point
+        }
+        return CGPoint(x: point.x, y: bounds.height - point.y)
     }
 }
 
 final class MenuController: NSObject, NSApplicationDelegate {
     let model = MenuModel()
     var panel: NSPanel?
-    var host: HitHostingView<MenuRoot>?
+    var host: WheelHostingView?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -463,10 +631,8 @@ final class MenuController: NSObject, NSApplicationDelegate {
             next.isMovable = false
             next.acceptsMouseMovedEvents = true
             let root = MenuRoot(model: model)
-            let view = HitHostingView(rootView: root)
-            view.onBackgroundClick = { [weak self] in
-                self?.model.dismiss()
-            }
+            let view = WheelHostingView(rootView: root)
+            view.model = model
             view.frame = NSRect(origin: .zero, size: screen.frame.size)
             view.autoresizingMask = [.width, .height]
             next.contentView = view
