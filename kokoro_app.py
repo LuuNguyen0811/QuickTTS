@@ -888,14 +888,21 @@ class KokoroApp(NSObject):
     @objc.python_method
     def _selection_is_editable(self) -> bool:
         self._source_app = NSWorkspace.sharedWorkspace().frontmostApplication()
-        target = self._editable_target()
+        hotkey.enable_front_app_accessibility()
+        focused = self._focused_element()
+        target = self._editable_target() if focused is not None else None
         self._replace_target = target
         self._replace_range = None
         if target is not None:
             self._replace_range = hotkey._ax_value(
                 target, ApplicationServices.kAXSelectedTextRangeAttribute
             )
-        return target is not None
+            return True
+        # ChatGPT and Teams draw the composer inside a web view that never
+        # publishes a focused text element. The selection is still live, and
+        # Replace pastes over it. A focused element that is not editable, such
+        # as a normal read-only page, still hides Replace.
+        return focused is None and self._source_app is not None
 
     @objc.python_method
     def _attribute_is_settable(self, element, attribute) -> bool:
@@ -1003,6 +1010,26 @@ class KokoroApp(NSObject):
             return -1
 
     @objc.python_method
+    def _selected_write_applied(
+        self, target, text, error, before_selected, before_value, current
+    ) -> bool:
+        if current is not None and str(current) == text:
+            return True
+        if error != 0 or current is None:
+            return error == 0 and current is None
+        if str(current) != "":
+            return False
+        # Notes clears the selection after a replace, so an empty selection
+        # with a changed field means the write already landed. Pasting again
+        # would insert a second copy.
+        after_value = hotkey._ax_value(target, ApplicationServices.kAXValueAttribute)
+        if before_value is None or after_value is None:
+            return True
+        if str(after_value) != str(before_value):
+            return True
+        return str(before_selected or "") == text
+
+    @objc.python_method
     def _write_selected_text(self, target, text: str) -> bool:
         try:
             ApplicationServices.AXUIElementSetAttributeValue(
@@ -1020,13 +1047,17 @@ class KokoroApp(NSObject):
             )
         attribute = ApplicationServices.kAXSelectedTextAttribute
         if self._attribute_is_settable(target, attribute):
+            before_selected = hotkey._ax_value(target, attribute)
+            before_value = hotkey._ax_value(
+                target, ApplicationServices.kAXValueAttribute
+            )
             error = self._ax_error(
                 ApplicationServices.AXUIElementSetAttributeValue(target, attribute, text)
             )
             current = hotkey._ax_value(target, attribute)
-            if error == 0 and (current is None or str(current) == text):
-                return True
-            if current is not None and str(current) == text:
+            if self._selected_write_applied(
+                target, text, error, before_selected, before_value, current
+            ):
                 return True
         value = hotkey._ax_value(target, ApplicationServices.kAXValueAttribute)
         if (

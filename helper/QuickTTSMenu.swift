@@ -60,7 +60,7 @@ private let tones: [ToneChoice] = [
     ToneChoice(
         id: "concise",
         title: "Concise",
-        symbol: "text.arrowtriangle.2.inward",
+        symbol: "arrow.down.right.and.arrow.up.left",
         instructions: "Adjust the tone of the text so it is concise, shorter, and more direct. Keep the meaning and the original language. Do not add new information. Return only the adjusted text."
     ),
 ]
@@ -296,7 +296,7 @@ final class MenuModel: ObservableObject {
         }
         if showTones {
             return tones.map {
-                WheelEntry(id: $0.id, title: $0.title, symbol: $0.symbol, hubTitle: $0.title, showsLabel: true)
+                WheelEntry(id: $0.id, title: $0.title, symbol: $0.symbol, hubTitle: $0.title)
             }
         }
         return actions.map {
