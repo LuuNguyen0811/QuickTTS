@@ -37,6 +37,34 @@ private let languages: [LanguageChoice] = [
     LanguageChoice(id: "es", title: "Spanish"),
 ]
 
+private struct ToneChoice {
+    let id: String
+    let title: String
+    let symbol: String
+    let instructions: String
+}
+
+private let tones: [ToneChoice] = [
+    ToneChoice(
+        id: "friendly",
+        title: "Friendly",
+        symbol: "face.smiling",
+        instructions: "Adjust the tone of the text so it is friendly, warm, and approachable. Keep the meaning and the original language. Do not add new information. Return only the adjusted text."
+    ),
+    ToneChoice(
+        id: "professional",
+        title: "Professional",
+        symbol: "briefcase.fill",
+        instructions: "Adjust the tone of the text so it is professional, formal, and polished. Keep the meaning and the original language. Do not add new information. Return only the adjusted text."
+    ),
+    ToneChoice(
+        id: "concise",
+        title: "Concise",
+        symbol: "text.arrowtriangle.2.inward",
+        instructions: "Adjust the tone of the text so it is concise, shorter, and more direct. Keep the meaning and the original language. Do not add new information. Return only the adjusted text."
+    ),
+]
+
 private func shortLanguage(_ code: String) -> String {
     switch code {
     case "en": return "EN"
@@ -56,6 +84,7 @@ final class MenuModel: ObservableObject {
     @Published var translateLanguage: String?
     @Published var opened = false
     @Published var showLanguages = false
+    @Published var showTones = false
     @Published var center = CGPoint.zero
     @Published var screenFrame = CGRect.zero
     @Published var busyTitle: String?
@@ -76,6 +105,7 @@ final class MenuModel: ObservableObject {
         translateLanguage = language
         selectionEditable = editable
         showLanguages = false
+        showTones = false
         languagesOpened = false
         busyTitle = nil
         previewTitle = nil
@@ -96,12 +126,29 @@ final class MenuModel: ObservableObject {
         onDismiss()
     }
 
+    func back() {
+        guard showLanguages || showTones else {
+            dismiss()
+            return
+        }
+        showLanguages = false
+        showTones = false
+        languagesOpened = false
+        hoverID = nil
+    }
+
     func press(_ key: String) {
         guard busyTitle == nil, previewText == nil, errorText == nil else { return }
         if showLanguages {
             let index = (Int(key) ?? 0) - 1
             guard languages.indices.contains(index) else { return }
             chooseLanguage(languages[index].id)
+            return
+        }
+        if showTones {
+            let index = (Int(key) ?? 0) - 1
+            guard tones.indices.contains(index) else { return }
+            chooseTone(tones[index].id)
             return
         }
         switch key {
@@ -120,9 +167,10 @@ final class MenuModel: ObservableObject {
             emit(["event": "speak"])
             dismiss()
         case "proofread":
-            rewrite(proof: true)
+            proofread()
         case "rewrite":
-            rewrite(proof: false)
+            hoverID = nil
+            showTones = true
         case "translate":
             if let code = translateLanguage, !code.isEmpty {
                 startTranslation(code)
@@ -144,6 +192,13 @@ final class MenuModel: ObservableObject {
         showLanguages = false
         emit(["event": "language", "code": code])
         startTranslation(code)
+    }
+
+    func chooseTone(_ id: String) {
+        guard busyTitle == nil, previewText == nil, errorText == nil else { return }
+        guard let tone = tones.first(where: { $0.id == id }) else { return }
+        showTones = false
+        adjustTone(tone)
     }
 
     func replace() {
@@ -195,17 +250,29 @@ final class MenuModel: ObservableObject {
 
     var translationToken: Int { job }
 
-    private func rewrite(proof: Bool) {
+    private func proofread() {
+        runIntelligence(
+            title: "Proofread",
+            busy: "Proofreading…",
+            instructions: "Proofread the text. Fix grammar, spelling, and punctuation. Return only the corrected text."
+        )
+    }
+
+    private func adjustTone(_ tone: ToneChoice) {
+        runIntelligence(title: tone.title, busy: "Rewriting…", instructions: tone.instructions)
+    }
+
+    private func runIntelligence(title: String, busy: String, instructions: String) {
         job += 1
         let token = job
-        let title = proof ? "Proofread" : "Rewrite"
-        busyTitle = proof ? "Proofreading…" : "Rewriting…"
+        busyTitle = busy
         errorText = nil
         previewText = nil
+        previewTitle = nil
         let source = sourceText
         Task {
             do {
-                let text = try await appleIntelligence(source, proof: proof)
+                let text = try await appleIntelligence(source, instructions: instructions)
                 await MainActor.run {
                     guard token == self.job else { return }
                     self.busyTitle = nil
@@ -225,6 +292,11 @@ final class MenuModel: ObservableObject {
         if showLanguages {
             return languages.map {
                 WheelEntry(id: $0.id, title: shortLanguage($0.id), symbol: "", hubTitle: $0.title)
+            }
+        }
+        if showTones {
+            return tones.map {
+                WheelEntry(id: $0.id, title: $0.title, symbol: $0.symbol, hubTitle: $0.title, showsLabel: true)
             }
         }
         return actions.map {
@@ -319,6 +391,7 @@ struct WheelEntry {
     let title: String
     let symbol: String
     var hubTitle: String = ""
+    var showsLabel: Bool = false
 }
 
 struct MenuLayout {
@@ -354,7 +427,8 @@ struct MenuRoot: View {
                 ActionWheel(
                     entries: model.wheelEntries(),
                     hoverID: model.hoverID,
-                    sprung: model.opened
+                    sprung: model.opened,
+                    canGoBack: model.showLanguages || model.showTones
                 )
                 .position(placed.wheel)
                 if let card = placed.card {
@@ -433,10 +507,11 @@ struct ActionWheel: View {
     let entries: [WheelEntry]
     let hoverID: String?
     let sprung: Bool
+    var canGoBack = false
 
     private var hubText: String {
         guard let hoverID, let entry = entries.first(where: { $0.id == hoverID }) else {
-            return "Close"
+            return canGoBack ? "Back" : "Close"
         }
         return entry.hubTitle.isEmpty ? entry.title : entry.hubTitle
     }
@@ -490,7 +565,7 @@ struct ActionWheel: View {
                 .frame(width: WheelLayout.hub * 2, height: WheelLayout.hub * 2)
             VStack(spacing: 4) {
                 if hoverID == nil {
-                    Image(systemName: "xmark")
+                    Image(systemName: canGoBack ? "chevron.backward" : "xmark")
                         .font(.system(size: 11, weight: .semibold))
                 }
                 Text(hubText)
@@ -514,7 +589,16 @@ struct ActionWheel: View {
         let mid = (start + end) / 2 * .pi / 180
         let radius = (WheelLayout.hub + WheelLayout.outer) / 2
         return Group {
-            if !entry.symbol.isEmpty {
+            if entry.showsLabel && !entry.symbol.isEmpty {
+                VStack(spacing: 2) {
+                    Image(systemName: entry.symbol)
+                        .font(.system(size: hovered ? 14 : 12, weight: hovered ? .semibold : .regular))
+                    Text(entry.title)
+                        .font(.system(size: 8, weight: hovered ? .semibold : .medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+            } else if !entry.symbol.isEmpty {
                 Image(systemName: entry.symbol)
                     .font(.system(size: hovered ? 15 : 13, weight: hovered ? .semibold : .regular))
             } else {
@@ -525,7 +609,7 @@ struct ActionWheel: View {
             }
         }
         .foregroundStyle(.white.opacity(hovered ? 1 : 0.62))
-        .frame(width: entries.count > 4 ? 36 : 56)
+        .frame(width: entry.showsLabel ? 76 : (entries.count > 4 ? 36 : 56))
         .scaleEffect(hovered ? 1.06 : 1)
         .offset(x: cos(mid) * radius, y: sin(mid) * radius)
     }
@@ -642,6 +726,8 @@ final class WheelHostingView: NSHostingView<MenuRoot> {
         case .slice(let id):
             if model.showLanguages {
                 model.chooseLanguage(id)
+            } else if model.showTones {
+                model.chooseTone(id)
             } else {
                 model.run(id)
             }
@@ -651,7 +737,9 @@ final class WheelHostingView: NSHostingView<MenuRoot> {
             model.copy()
         case .card:
             break
-        case .center, .outside:
+        case .center:
+            model.back()
+        case .outside:
             model.dismiss()
         }
     }
@@ -754,9 +842,9 @@ private func emit(_ object: [String: Any]) {
     try? FileHandle.standardOutput.write(contentsOf: line)
 }
 
-private func appleIntelligence(_ text: String, proof: Bool) async throws -> String {
+private func appleIntelligence(_ text: String, instructions: String) async throws -> String {
     if #available(macOS 26.0, *) {
-        return try await Intelligence.run(text, proof: proof)
+        return try await Intelligence.run(text, instructions: instructions)
     }
     throw MenuError("Proofread and Rewrite need Apple Intelligence on macOS 26 or newer.")
 }
@@ -769,7 +857,7 @@ private struct MenuError: LocalizedError {
 
 @available(macOS 26.0, *)
 private enum Intelligence {
-    static func run(_ text: String, proof: Bool) async throws -> String {
+    static func run(_ text: String, instructions: String) async throws -> String {
         #if canImport(FoundationModels)
         let model = SystemLanguageModel.default
         switch model.availability {
@@ -778,9 +866,6 @@ private enum Intelligence {
         case .unavailable(let reason):
             throw MenuError(reasonText(reason))
         }
-        let instructions = proof
-            ? "Proofread the text. Fix grammar, spelling, and punctuation. Return only the corrected text."
-            : "Rewrite the text so it is clearer and more natural. Keep the meaning. Return only the rewritten text."
         let session = LanguageModelSession(instructions: instructions)
         let response = try await session.respond(to: text)
         return response.content.trimmingCharacters(in: .whitespacesAndNewlines)

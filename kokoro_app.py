@@ -6,6 +6,7 @@ import ctypes.util
 import gc
 import json
 import math
+import os
 import subprocess
 import sys
 import threading
@@ -38,7 +39,10 @@ from AppKit import (
     NSPasteboardTypeString,
     NSPopUpButton,
     NSStatusBar,
+    NSTabView,
+    NSTabViewItem,
     NSTextField,
+    NSView,
     NSVariableStatusItemLength,
     NSWorkspace,
     NSWindow,
@@ -98,6 +102,17 @@ DEFAULT_CONFIG = {
     "keyCode": GRAVE_KEY,
     "modifiers": ["option"],
 }
+TRANSLATE_LANGUAGES = (
+    ("en", "English"),
+    ("vi", "Vietnamese"),
+    ("ja", "Japanese"),
+    ("ko", "Korean"),
+    ("zh-Hans", "Chinese"),
+    ("fr", "French"),
+    ("de", "German"),
+    ("es", "Spanish"),
+)
+TRANSLATE_LANGUAGE_CODES = {code for code, _title in TRANSLATE_LANGUAGES}
 
 _app = None
 
@@ -317,6 +332,10 @@ def load_config() -> tuple[dict, bool]:
         config["modifiers"] = ["option"]
     if not isinstance(config.get("voice"), str):
         config["voice"] = "af_heart"
+    for key in ("translateEditable", "translateReadOnly"):
+        value = config.get(key)
+        if not isinstance(value, str) or value not in TRANSLATE_LANGUAGE_CODES:
+            config.pop(key, None)
     save_config(config)
     return config, first_launch
 
@@ -500,6 +519,8 @@ class KokoroApp(NSObject):
         self.shortcut_field = None
         self.record_button = None
         self.status_field = None
+        self.editable_language_popup = None
+        self.read_only_language_popup = None
         return self
 
     @objc.python_method
@@ -507,8 +528,9 @@ class KokoroApp(NSObject):
         self._build_status_item()
         self._install_tap()
         self.start_load()
-        AppHelper.callLater(0.4, self._prompt_accessibility)
-        AppHelper.callLater(0.8, self._prompt_input_monitoring)
+        if os.environ.get("QUICKTTS_SKIP_PERMISSION_PROMPT") != "1":
+            AppHelper.callLater(0.4, self._prompt_accessibility)
+            AppHelper.callLater(0.8, self._prompt_input_monitoring)
         if self.first_launch:
             self.show_settings()
 
@@ -620,6 +642,11 @@ class KokoroApp(NSObject):
         speak.setTarget_(self)
         speak.setEnabled_(self.engine.ready)
         menu.addItem_(speak)
+        preview = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Show actions", "showActions:", ""
+        )
+        preview.setTarget_(self)
+        menu.addItem_(preview)
         stop = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Stop", "stopSpeech:", ""
         )
@@ -822,9 +849,10 @@ class KokoroApp(NSObject):
             self.set_status("The action menu could not open.")
             return
         self._menu_text = text
-        language = self.config.get("translateLanguage")
-        payload = {"cmd": "show", "text": text, "editable": self._selection_is_editable()}
-        if isinstance(language, str) and language:
+        editable = self._selection_is_editable()
+        payload = {"cmd": "show", "text": text, "editable": editable}
+        language = self._default_translate_language(editable)
+        if language:
             payload["translateLanguage"] = language
         self._menu_open = True
         self._menu_send(payload)
@@ -1065,10 +1093,6 @@ class KokoroApp(NSObject):
                 threading.Thread(target=self.speak, args=(text,), daemon=True).start()
             return
         if kind == "language":
-            code = event.get("code")
-            if isinstance(code, str) and code:
-                self.config["translateLanguage"] = code
-                save_config(self.config)
             return
         if kind == "replace":
             self._menu_open = False
@@ -1209,7 +1233,7 @@ class KokoroApp(NSObject):
     def _build_window(self):
         style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
         window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, 520, 280),
+            NSMakeRect(0, 0, 520, 360),
             style,
             NSBackingStoreBuffered,
             False,
@@ -1219,7 +1243,24 @@ class KokoroApp(NSObject):
         window.center()
         window.setDelegate_(self)
         content = window.contentView()
+        tabs = NSTabView.alloc().initWithFrame_(content.bounds())
+        general_item = NSTabViewItem.alloc().initWithIdentifier_("general")
+        general_item.setLabel_("General")
+        general = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 520, 300))
+        self._build_general_tab(general)
+        general_item.setView_(general)
+        translate_item = NSTabViewItem.alloc().initWithIdentifier_("translate")
+        translate_item.setLabel_("Translate")
+        translate = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 520, 300))
+        self._build_translate_tab(translate)
+        translate_item.setView_(translate)
+        tabs.addTabViewItem_(general_item)
+        tabs.addTabViewItem_(translate_item)
+        content.addSubview_(tabs)
+        self._window = window
 
+    @objc.python_method
+    def _build_general_tab(self, content):
         content.addSubview_(self._label("Model", 24, 228, 90, 24))
         self.model_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
             NSMakeRect(120, 224, 376, 28), False
@@ -1278,7 +1319,57 @@ class KokoroApp(NSObject):
         content.addSubview_(stop)
         self.status_field = self._label("Ready", 284, 28, 212, 24)
         content.addSubview_(self.status_field)
-        self._window = window
+
+    @objc.python_method
+    def _build_translate_tab(self, content):
+        content.addSubview_(
+            self._label(
+                "Choose a language for each kind of selection. Ask each time opens the language wheel.",
+                24,
+                230,
+                472,
+                40,
+            )
+        )
+        content.addSubview_(self._label("Editable text", 24, 180, 140, 24))
+        self.editable_language_popup = self._language_popup(
+            NSMakeRect(180, 176, 316, 28), "translateEditableChanged:"
+        )
+        content.addSubview_(self.editable_language_popup)
+        content.addSubview_(self._label("Read-only text", 24, 124, 140, 24))
+        self.read_only_language_popup = self._language_popup(
+            NSMakeRect(180, 120, 316, 28), "translateReadOnlyChanged:"
+        )
+        content.addSubview_(self.read_only_language_popup)
+        content.addSubview_(
+            self._label(
+                "Editable text is a selection in a field you can type in. Read-only text cannot be changed.",
+                24,
+                64,
+                472,
+                40,
+            )
+        )
+
+    @objc.python_method
+    def _language_popup(self, frame, action: str):
+        popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(frame, False)
+        popup.addItemWithTitle_("Ask each time")
+        popup.lastItem().setRepresentedObject_("")
+        for code, title in TRANSLATE_LANGUAGES:
+            popup.addItemWithTitle_(title)
+            popup.lastItem().setRepresentedObject_(code)
+        popup.setTarget_(self)
+        popup.setAction_(action)
+        return popup
+
+    @objc.python_method
+    def _default_translate_language(self, editable: bool) -> str:
+        key = "translateEditable" if editable else "translateReadOnly"
+        code = self.config.get(key)
+        if isinstance(code, str) and code in TRANSLATE_LANGUAGE_CODES:
+            return code
+        return ""
 
     @objc.python_method
     def _label(self, text: str, x: float, y: float, width: float, height: float):
@@ -1298,6 +1389,12 @@ class KokoroApp(NSObject):
             self._select_voice(voice)
         self.shortcut_field.setStringValue_(
             shortcut_label(self.config["keyCode"], self.config["modifiers"])
+        )
+        self._select_language(
+            self.editable_language_popup, self.config.get("translateEditable") or ""
+        )
+        self._select_language(
+            self.read_only_language_popup, self.config.get("translateReadOnly") or ""
         )
 
     def applicationShouldTerminateAfterLastWindowClosed_(self, sender):
@@ -1324,6 +1421,31 @@ class KokoroApp(NSObject):
                 self.voice_popup.selectItem_(item)
                 return True
         return False
+
+    @objc.python_method
+    def _select_language(self, popup, code: str) -> None:
+        if code not in TRANSLATE_LANGUAGE_CODES:
+            code = ""
+        for item in popup.menu().itemArray():
+            if str(item.representedObject() or "") == code:
+                popup.selectItem_(item)
+                return
+        popup.selectItemAtIndex_(0)
+
+    def translateEditableChanged_(self, sender):
+        self._save_translate_default("translateEditable", sender)
+
+    def translateReadOnlyChanged_(self, sender):
+        self._save_translate_default("translateReadOnly", sender)
+
+    @objc.python_method
+    def _save_translate_default(self, key: str, sender) -> None:
+        code = str(sender.selectedItem().representedObject() or "")
+        if code in TRANSLATE_LANGUAGE_CODES:
+            self.config[key] = code
+        else:
+            self.config.pop(key, None)
+        save_config(self.config)
 
     def voiceChanged_(self, sender):
         voice = str(sender.selectedItem().representedObject() or "")
@@ -1383,6 +1505,14 @@ class KokoroApp(NSObject):
     def speakSelection_(self, sender):
         del sender
         self.handle_hotkey()
+
+    def showActions_(self, sender):
+        del sender
+        value = NSPasteboard.generalPasteboard().stringForType_(NSPasteboardTypeString)
+        text = str(value).strip() if value else ""
+        if not text:
+            text = "hey can you send me that file when you get a chance thanks"
+        self._open_menu(text)
 
     def stopSpeech_(self, sender):
         del sender
