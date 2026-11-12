@@ -379,6 +379,7 @@ class Engine:
         self._lock = threading.Lock()
         self._model_id = None
         self.ready = False
+        self.failed = False
 
     def _open(self, model_id: str):
         from kokoro_onnx import Kokoro
@@ -390,6 +391,7 @@ class Engine:
         return Kokoro(str(path), str(voices))
 
     def load(self, model_id: str) -> None:
+        self.failed = False
         with self._lock:
             kokoro = self._open(model_id)
             try:
@@ -467,12 +469,24 @@ class Player:
         with self._lock:
             self._pending.discard(generation)
 
-    def play(self, generation: int, wav: bytes) -> None:
-        if len(wav) < 44 or not wav.startswith(b"RIFF"):
-            return
+    def is_current(self, generation: int) -> bool:
+        with self._lock:
+            return generation == self._gen
+
+    def wait(self, generation: int) -> None:
         with self._lock:
             if generation != self._gen:
                 return
+            proc = self._proc
+        if proc is not None:
+            proc.wait()
+
+    def play(self, generation: int, wav: bytes) -> bool:
+        if len(wav) < 44 or not wav.startswith(b"RIFF"):
+            return False
+        with self._lock:
+            if generation != self._gen:
+                return False
             path = support_dir() / f"speech-{generation}.wav"
             path.write_bytes(wav)
             for old in support_dir().glob("speech-*.wav"):
@@ -486,6 +500,7 @@ class Player:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
             )
+            return True
 
 
 class KokoroApp(NSObject):
@@ -505,6 +520,7 @@ class KokoroApp(NSObject):
         self._copy = None
         self._menu_proc = None
         self._menu_open = False
+        self._menu_speaking = False
         self._menu_text = ""
         self._source_app = None
         self._replace_target = None
@@ -647,11 +663,6 @@ class KokoroApp(NSObject):
         )
         preview.setTarget_(self)
         menu.addItem_(preview)
-        stop = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Stop", "stopSpeech:", ""
-        )
-        stop.setTarget_(self)
-        menu.addItem_(stop)
         settings = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Settings…", "showSettings:", ""
         )
@@ -697,6 +708,7 @@ class KokoroApp(NSObject):
             log(f"loaded {model_id}")
         except Exception:
             error = traceback.format_exc()
+            self.engine.failed = True
             log(error)
 
         def finish():
@@ -713,33 +725,92 @@ class KokoroApp(NSObject):
         AppHelper.callAfter(finish)
 
     @objc.python_method
-    def speak(self, text: str):
+    def speak(self, text: str, *, from_menu: bool = False):
         text = " ".join(text.split())
         if not text:
-            AppHelper.callAfter(NSBeep)
+            if not from_menu:
+                AppHelper.callAfter(NSBeep)
             return
         if len(text) > MAX_CHARS:
             text = text[:MAX_CHARS]
-        if not self.engine.ready:
+        if not from_menu and not self.engine.ready:
             AppHelper.callAfter(NSBeep)
             self.set_status("Model is still loading")
             return
         generation = self.player.begin()
-        AppHelper.callAfter(self._begin_speaking_animation)
+        if from_menu:
+            self._menu_speaking = True
         log(f"speaking {len(text)} characters")
+        failed = False
         try:
+            if not self._wait_ready(generation):
+                if self.player.is_current(generation):
+                    raise RuntimeError("The speech model is not ready.")
+                return
             wav = self.engine.synthesize(text, self.config["voice"])
-            self.player.play(generation, wav)
+            if not self.player.play(generation, wav):
+                if self.player.is_current(generation):
+                    raise RuntimeError("Could not speak.")
+                return
             del wav
             release_memory()
-        except Exception:
+            AppHelper.callAfter(self._begin_speaking_animation)
+            if from_menu:
+                AppHelper.callAfter(
+                    lambda: self._menu_send({"cmd": "speak", "phase": "playing"})
+                )
+            self.player.wait(generation)
+        except Exception as exc:
+            failed = True
             log(traceback.format_exc())
+            if from_menu and self.player.is_current(generation):
+                self._menu_speaking = False
+                message = (
+                    str(exc) if isinstance(exc, RuntimeError) else "Could not speak."
+                )
+                AppHelper.callAfter(
+                    lambda message=message: self._menu_send(
+                        {"cmd": "speak", "phase": "error", "message": message}
+                    )
+                )
+            elif not from_menu:
+                AppHelper.callAfter(NSBeep)
         finally:
             self.player.finish(generation)
+        if from_menu and not failed:
+            AppHelper.callAfter(
+                lambda generation=generation: self._finish_menu_speak(generation)
+            )
+
+    @objc.python_method
+    def _wait_ready(self, generation: int) -> bool:
+        deadline = time.monotonic() + 90
+        while not self.engine.ready:
+            if self.engine.failed or not self.player.is_current(generation):
+                return False
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+        return self.player.is_current(generation)
+
+    @objc.python_method
+    def _cancel_menu_speech(self) -> None:
+        self.player.stop()
+        release_memory()
+        self._end_speaking_animation()
+        self.set_status("Stopped")
+
+    @objc.python_method
+    def _finish_menu_speak(self, generation: int) -> None:
+        if not self._menu_speaking or not self.player.is_current(generation):
+            return
+        self._menu_speaking = False
+        self._close_menu()
 
     @objc.python_method
     def stop_speech(self):
         self._copy = None
+        self._menu_speaking = False
         self._close_menu()
         self.player.stop()
         release_memory()
@@ -859,6 +930,9 @@ class KokoroApp(NSObject):
 
     @objc.python_method
     def _close_menu(self) -> None:
+        if self._menu_speaking:
+            self._menu_speaking = False
+            self._cancel_menu_speech()
         if not self._menu_open and (
             self._menu_proc is None or self._menu_proc.poll() is not None
         ):
@@ -1116,12 +1190,19 @@ class KokoroApp(NSObject):
         kind = event.get("event")
         if kind == "dismiss":
             self._menu_open = False
+            if self._menu_speaking:
+                self._menu_speaking = False
+                self._cancel_menu_speech()
             return
         if kind == "speak":
-            self._menu_open = False
             text = self._menu_text
             if text:
-                threading.Thread(target=self.speak, args=(text,), daemon=True).start()
+                threading.Thread(
+                    target=self.speak,
+                    args=(text,),
+                    kwargs={"from_menu": True},
+                    daemon=True,
+                ).start()
             return
         if kind == "language":
             return

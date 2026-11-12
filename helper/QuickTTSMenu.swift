@@ -91,6 +91,7 @@ final class MenuModel: ObservableObject {
     @Published var previewTitle: String?
     @Published var previewText: String?
     @Published var errorText: String?
+    @Published var speakPhase: SpeakPhase?
     @Published var translationConfig: TranslationSession.Configuration?
     @Published var languagesOpened = false
     @Published var hoverID: String?
@@ -111,6 +112,7 @@ final class MenuModel: ObservableObject {
         previewTitle = nil
         previewText = nil
         errorText = nil
+        speakPhase = nil
         anchor = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(anchor) } ?? NSScreen.main
         screenFrame = screen?.frame ?? .zero
@@ -138,7 +140,7 @@ final class MenuModel: ObservableObject {
     }
 
     func press(_ key: String) {
-        guard busyTitle == nil, previewText == nil, errorText == nil else { return }
+        guard busyTitle == nil, previewText == nil, errorText == nil, speakPhase == nil else { return }
         if showLanguages {
             let index = (Int(key) ?? 0) - 1
             guard languages.indices.contains(index) else { return }
@@ -161,11 +163,10 @@ final class MenuModel: ObservableObject {
     }
 
     func run(_ id: String) {
-        guard busyTitle == nil, previewText == nil, errorText == nil else { return }
+        guard busyTitle == nil, previewText == nil, errorText == nil, speakPhase == nil else { return }
         switch id {
         case "speak":
-            emit(["event": "speak"])
-            dismiss()
+            startSpeak()
         case "proofread":
             proofread()
         case "rewrite":
@@ -213,7 +214,28 @@ final class MenuModel: ObservableObject {
         dismiss()
     }
 
+    func startSpeak() {
+        hoverID = nil
+        showLanguages = false
+        showTones = false
+        errorText = nil
+        previewText = nil
+        previewTitle = nil
+        speakPhase = .loading
+        busyTitle = "Loading…"
+        emit(["event": "speak"])
+    }
+
+    func showSpeaking() {
+        busyTitle = nil
+        errorText = nil
+        previewTitle = nil
+        previewText = nil
+        speakPhase = .playing
+    }
+
     func fail(_ message: String) {
+        speakPhase = nil
         busyTitle = nil
         previewText = nil
         previewTitle = nil
@@ -309,16 +331,18 @@ final class MenuModel: ObservableObject {
             x: center.x - screenFrame.minX,
             y: size.height - (center.y - screenFrame.minY)
         )
-        let showing = busyTitle != nil || previewText != nil || errorText != nil
+        let showing = busyTitle != nil || previewText != nil || errorText != nil || speakPhase == .playing
         guard showing else {
-            return MenuLayout(wheel: wheel, card: nil, replace: nil, copy: nil)
+            return MenuLayout(wheel: wheel, card: nil, replace: nil, copy: nil, stop: nil)
         }
-        let cardHeight: CGFloat = previewText != nil || errorText != nil ? 176 : 84
-        let below = wheel.y + WheelLayout.outer + 14 + cardHeight / 2
-        let cardY = below + cardHeight / 2 + 8 < size.height
-            ? below
-            : wheel.y - WheelLayout.outer - 14 - cardHeight / 2
-        let cardX = min(max(wheel.x, 150), max(size.width - 150, 150))
+        let margin: CGFloat = 12
+        let available = max(size.height - margin * 2, 84)
+        let cardHeight = self.cardHeight(maxHeight: available)
+        let minCenter = margin + cardHeight / 2
+        let maxCenter = max(minCenter, size.height - margin - cardHeight / 2)
+        let cardY = min(max(wheel.y, minCenter), maxCenter)
+        let halfWidth = WheelLayout.cardWidth / 2 + margin
+        let cardX = min(max(wheel.x, halfWidth), max(size.width - halfWidth, halfWidth))
         let card = CGRect(
             x: cardX - WheelLayout.cardWidth / 2,
             y: cardY - cardHeight / 2,
@@ -327,7 +351,10 @@ final class MenuModel: ObservableObject {
         )
         var replace: CGRect?
         var copy: CGRect?
-        if previewText != nil {
+        var stop: CGRect?
+        if speakPhase == .playing {
+            stop = CGRect(x: card.minX, y: card.maxY - 52, width: card.width, height: 52)
+        } else if previewText != nil {
             let row = CGRect(x: card.minX, y: card.maxY - 64, width: card.width, height: 64)
             if selectionEditable {
                 replace = CGRect(x: row.minX, y: row.minY, width: row.width / 2, height: row.height)
@@ -336,7 +363,34 @@ final class MenuModel: ObservableObject {
                 copy = row
             }
         }
-        return MenuLayout(wheel: wheel, card: card, replace: replace, copy: copy)
+        return MenuLayout(wheel: wheel, card: card, replace: replace, copy: copy, stop: stop)
+    }
+
+    func cardHeight(maxHeight: CGFloat) -> CGFloat {
+        min(max(idealCardHeight(), 84), max(maxHeight, 84))
+    }
+
+    func idealCardHeight() -> CGFloat {
+        if speakPhase == .playing {
+            return 112
+        }
+        if previewText == nil && errorText == nil {
+            return 84
+        }
+        let buttons: CGFloat = previewText != nil ? 8 + 32 : 0
+        return 14 + 18 + 8 + messageHeight() + buttons + 14
+    }
+
+    func messageHeight() -> CGFloat {
+        guard let message = previewText ?? errorText, !message.isEmpty else { return 0 }
+        let font = NSFont.systemFont(ofSize: 13)
+        let width = WheelLayout.cardWidth - 28
+        let rect = (message as NSString).boundingRect(
+            with: NSSize(width: width, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font]
+        )
+        return ceil(rect.height) + 8
     }
 
     func hit(_ swiftPoint: CGPoint, in size: CGSize) -> WheelHit {
@@ -347,8 +401,14 @@ final class MenuModel: ObservableObject {
         if let copy = placed.copy, copy.contains(swiftPoint) {
             return .copy
         }
+        if let stop = placed.stop, stop.contains(swiftPoint) {
+            return .stop
+        }
         if let card = placed.card, card.contains(swiftPoint) {
             return .card
+        }
+        if placed.card != nil {
+            return .outside
         }
         let dx = swiftPoint.x - placed.wheel.x
         let dy = swiftPoint.y - placed.wheel.y
@@ -399,6 +459,12 @@ struct MenuLayout {
     var card: CGRect?
     var replace: CGRect?
     var copy: CGRect?
+    var stop: CGRect?
+}
+
+enum SpeakPhase: Equatable {
+    case loading
+    case playing
 }
 
 enum WheelHit {
@@ -408,6 +474,7 @@ enum WheelHit {
     case card
     case replace
     case copy
+    case stop
 }
 
 enum WheelLayout {
@@ -424,15 +491,17 @@ struct MenuRoot: View {
         GeometryReader { geo in
             let placed = model.layout(in: geo.size)
             ZStack {
-                ActionWheel(
-                    entries: model.wheelEntries(),
-                    hoverID: model.hoverID,
-                    sprung: model.opened,
-                    canGoBack: model.showLanguages || model.showTones
-                )
-                .position(placed.wheel)
+                if placed.card == nil {
+                    ActionWheel(
+                        entries: model.wheelEntries(),
+                        hoverID: model.hoverID,
+                        sprung: model.opened,
+                        canGoBack: model.showLanguages || model.showTones
+                    )
+                    .position(placed.wheel)
+                }
                 if let card = placed.card {
-                    cardView
+                    cardView(height: card.height)
                         .position(x: card.midX, y: card.midY)
                 }
             }
@@ -454,10 +523,38 @@ struct MenuRoot: View {
     }
 
     @ViewBuilder
-    private var cardView: some View {
+    private func cardView(height: CGFloat) -> some View {
+        if model.speakPhase == .playing {
+            speakCard(height: height)
+        } else {
+            resultCard(height: height)
+        }
+    }
+
+    private func speakCard(height: CGFloat) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: "speaker.wave.2.fill")
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(.white)
+                .symbolEffect(.pulse, options: .repeating)
+            Text("Stop")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 32)
+                .background(Color.white.opacity(0.14), in: Capsule())
+        }
+        .padding(14)
+        .frame(width: WheelLayout.cardWidth, height: height)
+        .modifier(GlassChrome(shape: RoundedRectangle(cornerRadius: 22, style: .continuous)))
+    }
+
+    private func resultCard(height: CGFloat) -> some View {
         let title = model.busyTitle ?? model.previewTitle ?? (model.errorText == nil ? "" : "Could not finish")
         let message = model.previewText ?? model.errorText
-        VStack(alignment: .leading, spacing: 8) {
+        let buttons: CGFloat = model.previewText != nil ? 8 + 32 : 0
+        let bodyLimit = max(height - 14 - 18 - 8 - buttons - 14, 20)
+        return VStack(alignment: .leading, spacing: 8) {
             if message == nil {
                 VStack(spacing: 10) {
                     ProgressView()
@@ -475,13 +572,8 @@ struct MenuRoot: View {
                 Text(title)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white)
-                Text(message)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.white.opacity(0.88))
-                    .lineLimit(6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                messageBody(message, limit: bodyLimit)
             }
-            Spacer(minLength: 0)
             if model.previewText != nil {
                 HStack(spacing: 8) {
                     if model.selectionEditable {
@@ -498,8 +590,25 @@ struct MenuRoot: View {
             }
         }
         .padding(14)
-        .frame(width: WheelLayout.cardWidth, height: model.previewText != nil || model.errorText != nil ? 176 : 84)
+        .frame(width: WheelLayout.cardWidth, height: height, alignment: .top)
         .modifier(GlassChrome(shape: RoundedRectangle(cornerRadius: 22, style: .continuous)))
+    }
+
+    @ViewBuilder
+    private func messageBody(_ message: String, limit: CGFloat) -> some View {
+        let text = Text(message)
+            .font(.system(size: 13))
+            .foregroundStyle(.white.opacity(0.88))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+        if model.messageHeight() > limit + 1 {
+            ScrollView {
+                text
+            }
+            .frame(height: limit)
+        } else {
+            text
+        }
     }
 }
 
@@ -735,6 +844,8 @@ final class WheelHostingView: NSHostingView<MenuRoot> {
             model.replace()
         case .copy:
             model.copy()
+        case .stop:
+            model.dismiss()
         case .card:
             break
         case .center:
@@ -793,6 +904,13 @@ final class MenuController: NSObject, NSApplicationDelegate {
             }
         case "dismiss":
             panel?.orderOut(nil)
+        case "speak":
+            let phase = object["phase"] as? String ?? ""
+            if phase == "playing" {
+                model.showSpeaking()
+            } else if phase == "error" {
+                model.fail(object["message"] as? String ?? "Could not speak.")
+            }
         default:
             break
         }
