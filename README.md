@@ -41,12 +41,35 @@ QuickTTS has to be allowed once, under its own name:
 
 The menu item **Open Permission Settings** opens those panes. If the shortcut still does nothing after you enable them, quit QuickTTS and open it again.
 
-## Rebuild the disk image
+## Build
 
-From this repository, `package.sh` uses `.venv`, downloads any model file that is missing or not a real weight file, builds the app, and writes `QuickTTS.dmg` here.
+From this repository, `package.sh` uses `.venv`. It installs PyInstaller, downloads any model file that is missing or not a real weight file, builds `dist/QuickTTS.app`, compiles the Swift action menu into that app, signs it, runs a short self-test, and writes `QuickTTS.dmg` here.
 
 ```sh
 ./package.sh
+```
+
+To build the app and skip the disk image:
+
+```sh
+SKIP_DMG=1 ./package.sh
+```
+
+While changing code, run the menu bar app directly instead of packaging it:
+
+```sh
+.venv/bin/python kokoro_app.py
+```
+
+The action menu is a separate binary, `helper/QuickTTSMenu`. Rebuild it after editing `helper/QuickTTSMenu.swift`, then quit and reopen the Python app so it launches the new helper. `./package.sh` already includes this compile.
+
+```sh
+SDK="$(xcrun --sdk macosx --show-sdk-path)"
+xcrun --sdk macosx swiftc -O -swift-version 5 -target arm64-apple-macosx15.0 \
+  -sdk "$SDK" \
+  -framework SwiftUI -framework AppKit -framework Translation \
+  -Xlinker -weak_framework -Xlinker FoundationModels \
+  -o helper/QuickTTSMenu helper/QuickTTSMenu.swift
 ```
 
 ## Command-line server
