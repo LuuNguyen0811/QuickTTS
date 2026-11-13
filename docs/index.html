@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ChickEN</title>
-  <meta name="description" content="Speak, proofread, rewrite and translate selected text from the menu bar. On your Mac. No API key.">
+  <title>ChickEN — English help for your Mac</title>
+  <meta name="description" content="English help from the Mac menu bar. Hear selected text, proofread it, rewrite the tone, or translate it. Proofread and Rewrite need Apple Intelligence on macOS 26. No API key.">
   <link rel="icon" href="icon.png">
   <style>
     :root {
@@ -90,9 +90,9 @@
 
     .points {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(2, 1fr);
       gap: 0.75rem;
-      margin: 3rem 0 0;
+      margin: 2.5rem 0 0;
       padding: 0;
       list-style: none;
     }
@@ -115,6 +115,19 @@
     .points span {
       color: var(--muted);
       font-size: 0.9rem;
+    }
+
+    .points .need {
+      display: block;
+      margin: 0.15rem 0 0.4rem;
+      color: var(--blue);
+      font-size: 0.75rem;
+      font-weight: 620;
+      letter-spacing: 0.01em;
+    }
+
+    .points + .note {
+      margin-top: 0.9rem;
     }
 
     .video,
@@ -213,36 +226,44 @@
   <main>
     <img class="mark" src="icon.png" alt="" width="248" height="248">
     <h1>ChickEN</h1>
-    <p class="lede">Speak, proofread, rewrite and translate selected text from the menu bar. On your Mac. No API key.</p>
+    <p class="lede">English help for the text you select. Hear it, fix the writing, change the tone, or translate it — from the wheel menu, on your Mac, with no API key.</p>
     <a class="download" href="https://github.com/LuuNguyen0811/QuickTTS/releases/download/v1.0.0/ChickEN.dmg">Download for macOS</a>
     <p class="meta">Apple silicon · about 451 MB</p>
+    <p class="meta">Select text, then press <strong>Option+`</strong>. The menu opens at the pointer.</p>
 
     <ul class="points">
       <li>
-        <strong>Menu bar only</strong>
-        <span>A chicken icon in the menu bar. It does not stay in the Dock.</span>
+        <strong>Speak</strong>
+        <span>Hear the selection in an English voice. Fast or best quality. Speech stays on this Mac.</span>
       </li>
       <li>
-        <strong>Option+`</strong>
-        <span>The default shortcut opens a menu at the pointer: Speak, Proofread, Rewrite, Translate.</span>
+        <strong>Proofread</strong>
+        <span class="need">Needs Apple Intelligence · macOS 26</span>
+        <span>Fix grammar, spelling, and punctuation so the English reads cleanly.</span>
       </li>
       <li>
-        <strong>Two qualities</strong>
-        <span>Pick a voice, then fast or best quality. Speech stays on this Mac.</span>
+        <strong>Rewrite</strong>
+        <span class="need">Needs Apple Intelligence · macOS 26</span>
+        <span>Friendly, professional, or concise. Same meaning, a clearer tone.</span>
+      </li>
+      <li>
+        <strong>Translate</strong>
+        <span>Into English, or from English into Vietnamese, Japanese, Korean, Chinese, French, German, or Spanish.</span>
       </li>
     </ul>
+    <p class="note">Proofread and Rewrite need Apple Intelligence on macOS 26 or newer. Turn it on in System Settings before you use them.</p>
 
     <section class="video">
       <h2>See it</h2>
       <video controls playsinline preload="metadata" poster="demo/ChickEN-demo-poster.jpg" src="demo/ChickEN-demo.mp4">
         <a href="demo/ChickEN-demo.mp4">Watch the demo video</a>
       </video>
-      <p class="note">Select text, press the shortcut, then pick Speak, Proofread, Rewrite or Translate. Proofread and Rewrite use Apple Intelligence on macOS 26.</p>
+      <p class="note">Select text, press the shortcut, then pick Speak, Proofread, Rewrite, or Translate. Proofread and Rewrite use Apple Intelligence. Translate uses the system translator, and the language you pick is remembered.</p>
     </section>
 
     <section class="demo">
-      <h2>Hear it</h2>
-      <p class="sentence">“ChickEN reads the words you select, straight from the menu bar.”</p>
+      <h2>Hear English</h2>
+      <p class="sentence">“ChickEN reads the words you select, straight from the wheel menu.”</p>
       <ul class="clips">
         <li>
           <div class="who">
@@ -266,7 +287,7 @@
           <audio controls preload="metadata" src="demo/emma.wav"></audio>
         </li>
       </ul>
-      <p class="note">Same sentence, best-quality model. This is the quality the app uses by default.</p>
+      <p class="note">The same English sentence, three voices, best-quality model. This is the quality the app uses by default.</p>
     </section>
 
     <section class="install">

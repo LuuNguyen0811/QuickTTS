@@ -4,7 +4,7 @@
 
 [https://luunguyen0811.github.io/QuickTTS/](https://luunguyen0811.github.io/QuickTTS/)
 
-A menu bar tool that speaks, proofreads, rewrites and translates selected text, on this Mac, with no API key. Speech uses Kokoro.
+A menu bar tool for English. Hear selected text, proofread it, rewrite the tone, or translate it, on this Mac, with no API key. Speech uses Kokoro.
 
 [![ChickEN demo: select text, press the shortcut, pick an action](docs/demo/ChickEN-demo-poster.jpg)](https://luunguyen0811.github.io/QuickTTS/demo/ChickEN-demo.mp4)
 
