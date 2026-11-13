@@ -10,7 +10,7 @@ A tool that speaks selected text with Kokoro, on this Mac, with no API key.
 
 1. Open `QuickTTS.dmg`.
 2. Drag **QuickTTS** onto **Applications**.
-3. Open **QuickTTS** from Applications.
+3. Open **QuickTTS** from Applications. 
 4. Grant permission
 
 QuickTTS appears in the menu bar as a speaker icon. It does not stay in the Dock. The first time it opens, the settings window is shown.
@@ -23,10 +23,10 @@ Open the menu bar icon and choose **Settings…**.
 
 - **Model:** Fast (int8) or Best quality (full). The default is **Best quality (full)**. It is slower and uses more memory. Both are inside the app.
 - **Voice:** default Female-Heart. Names look like Male-Eric and Female-Heart. English voices are listed first.
-- **Shortcut:** click **Record shortcut**, then press the keys. The default is **Option+`**. On the ABC layout, Option+` is a dead key, so include Control if that shortcut does not fire.
+- **Shortcut:** click **Record shortcut**, then press the keys. The default is **Option+`**. On the ABC layout, Option+` is a dead key, so include Control if that shortcut does not fire. The shortcut opens the action menu.
 - **Test voice** speaks a longer sample sentence.
 
-The shortcut stops whatever is playing and speaks the new selection. With nothing selected, the same shortcut stops the current clip instead of copying. **Stop** in the menu bar menu, and the **Stop** button in Settings, do the same: playback ends, a clip that is still being created is dropped, and the audio file is removed. More than 4000 characters is read from the start through 4000 characters.
+The shortcut opens an action menu at the pointer: Speak, Proofread, Rewrite, and Translate. Speak uses Kokoro. Proofread and Rewrite use Apple Intelligence on macOS 26. Translate uses the system Translation framework, and the language you pick is remembered. Escape or a click outside closes the menu. With nothing selected, the same shortcut stops the current clip instead of copying. **Stop** in the menu bar menu, and the **Stop** button in Settings, do the same: playback ends, a clip that is still being created is dropped, and the audio file is removed. More than 4000 characters is read from the start through 4000 characters.
 
 The speech model is loaded for that clip and released when the audio has been created. macOS is told not to keep those freed blocks in a memory cache, so the extra memory drops once the clip is ready to play. The next clip loads the model again.
 

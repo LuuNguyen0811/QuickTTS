@@ -6,6 +6,7 @@ import ctypes.util
 import gc
 import json
 import math
+import os
 import subprocess
 import sys
 import threading
@@ -21,6 +22,7 @@ import numpy as np
 from AppKit import (
     NSApp,
     NSApplication,
+    NSApplicationActivateIgnoringOtherApps,
     NSApplicationActivationPolicyAccessory,
     NSBackingStoreBuffered,
     NSBeep,
@@ -37,8 +39,12 @@ from AppKit import (
     NSPasteboardTypeString,
     NSPopUpButton,
     NSStatusBar,
+    NSTabView,
+    NSTabViewItem,
     NSTextField,
+    NSView,
     NSVariableStatusItemLength,
+    NSWorkspace,
     NSWindow,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskTitled,
@@ -50,6 +56,9 @@ import hotkey
 
 APP_NAME = "QuickTTS"
 MAX_CHARS = 4000
+TEXT_INPUT_ROLES = frozenset(
+    {"AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"}
+)
 GRAVE_KEY = 50
 CONTROL = Quartz.kCGEventFlagMaskControl
 OPTION = Quartz.kCGEventFlagMaskAlternate
@@ -61,6 +70,24 @@ MODIFIER_BITS = (
     ("shift", SHIFT, "⇧"),
     ("command", COMMAND, "⌘"),
 )
+MENU_KEYS = {
+    18: "1",
+    19: "2",
+    20: "3",
+    21: "4",
+    23: "5",
+    22: "6",
+    26: "7",
+    28: "8",
+    83: "1",
+    84: "2",
+    85: "3",
+    86: "4",
+    87: "5",
+    88: "6",
+    89: "7",
+    91: "8",
+}
 MODEL_CHOICES = (
     ("int8", "Fast (int8)"),
     ("fp32", "Best quality (full)"),
@@ -75,6 +102,17 @@ DEFAULT_CONFIG = {
     "keyCode": GRAVE_KEY,
     "modifiers": ["option"],
 }
+TRANSLATE_LANGUAGES = (
+    ("en", "English"),
+    ("vi", "Vietnamese"),
+    ("ja", "Japanese"),
+    ("ko", "Korean"),
+    ("zh-Hans", "Chinese"),
+    ("fr", "French"),
+    ("de", "German"),
+    ("es", "Spanish"),
+)
+TRANSLATE_LANGUAGE_CODES = {code for code, _title in TRANSLATE_LANGUAGES}
 
 _app = None
 
@@ -294,6 +332,10 @@ def load_config() -> tuple[dict, bool]:
         config["modifiers"] = ["option"]
     if not isinstance(config.get("voice"), str):
         config["voice"] = "af_heart"
+    for key in ("translateEditable", "translateReadOnly"):
+        value = config.get(key)
+        if not isinstance(value, str) or value not in TRANSLATE_LANGUAGE_CODES:
+            config.pop(key, None)
     save_config(config)
     return config, first_launch
 
@@ -337,6 +379,7 @@ class Engine:
         self._lock = threading.Lock()
         self._model_id = None
         self.ready = False
+        self.failed = False
 
     def _open(self, model_id: str):
         from kokoro_onnx import Kokoro
@@ -348,6 +391,7 @@ class Engine:
         return Kokoro(str(path), str(voices))
 
     def load(self, model_id: str) -> None:
+        self.failed = False
         with self._lock:
             kokoro = self._open(model_id)
             try:
@@ -425,12 +469,24 @@ class Player:
         with self._lock:
             self._pending.discard(generation)
 
-    def play(self, generation: int, wav: bytes) -> None:
-        if len(wav) < 44 or not wav.startswith(b"RIFF"):
-            return
+    def is_current(self, generation: int) -> bool:
+        with self._lock:
+            return generation == self._gen
+
+    def wait(self, generation: int) -> None:
         with self._lock:
             if generation != self._gen:
                 return
+            proc = self._proc
+        if proc is not None:
+            proc.wait()
+
+    def play(self, generation: int, wav: bytes) -> bool:
+        if len(wav) < 44 or not wav.startswith(b"RIFF"):
+            return False
+        with self._lock:
+            if generation != self._gen:
+                return False
             path = support_dir() / f"speech-{generation}.wav"
             path.write_bytes(wav)
             for old in support_dir().glob("speech-*.wav"):
@@ -444,6 +500,7 @@ class Player:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
             )
+            return True
 
 
 class KokoroApp(NSObject):
@@ -461,6 +518,13 @@ class KokoroApp(NSObject):
         self._recording = False
         self._monitor = None
         self._copy = None
+        self._menu_proc = None
+        self._menu_open = False
+        self._menu_speaking = False
+        self._menu_text = ""
+        self._source_app = None
+        self._replace_target = None
+        self._replace_range = None
         self.status = None
         self._idle_image = None
         self._speak_frames = None
@@ -471,6 +535,8 @@ class KokoroApp(NSObject):
         self.shortcut_field = None
         self.record_button = None
         self.status_field = None
+        self.editable_language_popup = None
+        self.read_only_language_popup = None
         return self
 
     @objc.python_method
@@ -478,7 +544,9 @@ class KokoroApp(NSObject):
         self._build_status_item()
         self._install_tap()
         self.start_load()
-        self._prompt_accessibility()
+        if os.environ.get("QUICKTTS_SKIP_PERMISSION_PROMPT") != "1":
+            AppHelper.callLater(0.4, self._prompt_accessibility)
+            AppHelper.callLater(0.8, self._prompt_input_monitoring)
         if self.first_launch:
             self.show_settings()
 
@@ -490,6 +558,30 @@ class KokoroApp(NSObject):
             )
         except Exception:
             log(traceback.format_exc())
+
+    @objc.python_method
+    def _prompt_input_monitoring(self):
+        try:
+            granted = bool(Quartz.CGPreflightListenEventAccess())
+        except Exception:
+            log(traceback.format_exc())
+            return
+        log(f"input monitoring={granted}")
+        if granted:
+            return
+        try:
+            allowed = bool(Quartz.CGRequestListenEventAccess())
+            log(f"input monitoring request={allowed}")
+        except Exception:
+            log(traceback.format_exc())
+            allowed = False
+        if not allowed:
+            subprocess.Popen(
+                [
+                    "/usr/bin/open",
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+                ]
+            )
 
     @objc.python_method
     def _build_status_item(self):
@@ -561,16 +653,16 @@ class KokoroApp(NSObject):
         header.setEnabled_(False)
         menu.addItem_(header)
         speak = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Speak Selection", "speakSelection:", ""
+            "Selection actions", "speakSelection:", ""
         )
         speak.setTarget_(self)
         speak.setEnabled_(self.engine.ready)
         menu.addItem_(speak)
-        stop = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Stop", "stopSpeech:", ""
+        preview = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Show actions", "showActions:", ""
         )
-        stop.setTarget_(self)
-        menu.addItem_(stop)
+        preview.setTarget_(self)
+        menu.addItem_(preview)
         settings = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Settings…", "showSettings:", ""
         )
@@ -616,6 +708,7 @@ class KokoroApp(NSObject):
             log(f"loaded {model_id}")
         except Exception:
             error = traceback.format_exc()
+            self.engine.failed = True
             log(error)
 
         def finish():
@@ -632,33 +725,93 @@ class KokoroApp(NSObject):
         AppHelper.callAfter(finish)
 
     @objc.python_method
-    def speak(self, text: str):
+    def speak(self, text: str, *, from_menu: bool = False):
         text = " ".join(text.split())
         if not text:
-            AppHelper.callAfter(NSBeep)
+            if not from_menu:
+                AppHelper.callAfter(NSBeep)
             return
         if len(text) > MAX_CHARS:
             text = text[:MAX_CHARS]
-        if not self.engine.ready:
+        if not from_menu and not self.engine.ready:
             AppHelper.callAfter(NSBeep)
             self.set_status("Model is still loading")
             return
         generation = self.player.begin()
-        AppHelper.callAfter(self._begin_speaking_animation)
+        if from_menu:
+            self._menu_speaking = True
         log(f"speaking {len(text)} characters")
+        failed = False
         try:
+            if not self._wait_ready(generation):
+                if self.player.is_current(generation):
+                    raise RuntimeError("The speech model is not ready.")
+                return
             wav = self.engine.synthesize(text, self.config["voice"])
-            self.player.play(generation, wav)
+            if not self.player.play(generation, wav):
+                if self.player.is_current(generation):
+                    raise RuntimeError("Could not speak.")
+                return
             del wav
             release_memory()
-        except Exception:
+            AppHelper.callAfter(self._begin_speaking_animation)
+            if from_menu:
+                AppHelper.callAfter(
+                    lambda: self._menu_send({"cmd": "speak", "phase": "playing"})
+                )
+            self.player.wait(generation)
+        except Exception as exc:
+            failed = True
             log(traceback.format_exc())
+            if from_menu and self.player.is_current(generation):
+                self._menu_speaking = False
+                message = (
+                    str(exc) if isinstance(exc, RuntimeError) else "Could not speak."
+                )
+                AppHelper.callAfter(
+                    lambda message=message: self._menu_send(
+                        {"cmd": "speak", "phase": "error", "message": message}
+                    )
+                )
+            elif not from_menu:
+                AppHelper.callAfter(NSBeep)
         finally:
             self.player.finish(generation)
+        if from_menu and not failed:
+            AppHelper.callAfter(
+                lambda generation=generation: self._finish_menu_speak(generation)
+            )
+
+    @objc.python_method
+    def _wait_ready(self, generation: int) -> bool:
+        deadline = time.monotonic() + 90
+        while not self.engine.ready:
+            if self.engine.failed or not self.player.is_current(generation):
+                return False
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+        return self.player.is_current(generation)
+
+    @objc.python_method
+    def _cancel_menu_speech(self) -> None:
+        self.player.stop()
+        release_memory()
+        self._end_speaking_animation()
+        self.set_status("Stopped")
+
+    @objc.python_method
+    def _finish_menu_speak(self, generation: int) -> None:
+        if not self._menu_speaking or not self.player.is_current(generation):
+            return
+        self._menu_speaking = False
+        self._close_menu()
 
     @objc.python_method
     def stop_speech(self):
         self._copy = None
+        self._menu_speaking = False
+        self._close_menu()
         self.player.stop()
         release_memory()
         self._end_speaking_animation()
@@ -669,14 +822,403 @@ class KokoroApp(NSObject):
     def handle_hotkey(self):
         if self._recording:
             return
+        if self._menu_open:
+            self._close_menu()
+            return
+        hotkey.enable_front_app_accessibility()
         text = hotkey.ax_selected_text().strip()
         if text:
-            threading.Thread(target=self.speak, args=(text,), daemon=True).start()
+            self._open_menu(text)
             return
         if self.player.busy():
             self.stop_speech()
             return
         self._begin_copy()
+
+    @objc.python_method
+    def _menu_binary(self) -> Path:
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent / "QuickTTSMenu"
+        return Path(__file__).resolve().parent / "helper" / "QuickTTSMenu"
+
+    @objc.python_method
+    def _ensure_menu(self) -> None:
+        proc = self._menu_proc
+        if proc is not None and proc.poll() is None:
+            return
+        path = self._menu_binary()
+        if not path.is_file():
+            log(f"menu helper missing: {path}")
+            self._menu_proc = None
+            return
+        proc = subprocess.Popen(
+            [str(path)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+        )
+        self._menu_proc = proc
+        threading.Thread(target=self._read_menu, args=(proc,), daemon=True).start()
+        threading.Thread(target=self._drain_menu_error, args=(proc,), daemon=True).start()
+
+    @objc.python_method
+    def _menu_send(self, payload: dict) -> None:
+        proc = self._menu_proc
+        if proc is None or proc.stdin is None or proc.poll() is not None:
+            return
+        try:
+            proc.stdin.write((json.dumps(payload) + "\n").encode())
+            proc.stdin.flush()
+        except Exception:
+            log(traceback.format_exc())
+
+    @objc.python_method
+    def _read_menu(self, proc: subprocess.Popen) -> None:
+        stream = proc.stdout
+        if stream is None:
+            return
+        for raw in stream:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                log(f"menu: {line}")
+                continue
+            AppHelper.callAfter(lambda event=event: self._on_menu_event(event))
+        AppHelper.callAfter(lambda: self._menu_exited(proc))
+
+    @objc.python_method
+    def _drain_menu_error(self, proc: subprocess.Popen) -> None:
+        stream = proc.stderr
+        if stream is None:
+            return
+        for raw in stream:
+            line = raw.decode("utf-8", "replace").strip()
+            if line:
+                log(f"menu: {line}")
+
+    @objc.python_method
+    def _menu_exited(self, proc: subprocess.Popen) -> None:
+        if self._menu_proc is proc:
+            self._menu_proc = None
+            self._menu_open = False
+
+    @objc.python_method
+    def _open_menu(self, text: str) -> None:
+        text = text.strip()
+        if not text:
+            NSBeep()
+            return
+        if len(text) > MAX_CHARS:
+            text = text[:MAX_CHARS]
+        self._ensure_menu()
+        if self._menu_proc is None or self._menu_proc.poll() is not None:
+            NSBeep()
+            self.set_status("The action menu could not open.")
+            return
+        self._menu_text = text
+        editable = self._selection_is_editable()
+        payload = {"cmd": "show", "text": text, "editable": editable}
+        language = self._default_translate_language(editable)
+        if language:
+            payload["translateLanguage"] = language
+        self._menu_open = True
+        self._menu_send(payload)
+
+    @objc.python_method
+    def _close_menu(self) -> None:
+        if self._menu_speaking:
+            self._menu_speaking = False
+            self._cancel_menu_speech()
+        if not self._menu_open and (
+            self._menu_proc is None or self._menu_proc.poll() is not None
+        ):
+            self._menu_open = False
+            return
+        self._menu_open = False
+        self._menu_send({"cmd": "dismiss"})
+
+    @objc.python_method
+    def _copy_text(self, text: str) -> None:
+        pasteboard = NSPasteboard.generalPasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString_forType_(text, NSPasteboardTypeString)
+
+    @objc.python_method
+    def _focused_element(self):
+        if not hotkey.ax_trusted():
+            return None
+        system = ApplicationServices.AXUIElementCreateSystemWide()
+        ApplicationServices.AXUIElementSetMessagingTimeout(system, 0.4)
+        focused = hotkey._ax_value(system, ApplicationServices.kAXFocusedUIElementAttribute)
+        if focused is None:
+            return None
+        ApplicationServices.AXUIElementSetMessagingTimeout(focused, 0.4)
+        return focused
+
+    @objc.python_method
+    def _selection_is_editable(self) -> bool:
+        self._source_app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        hotkey.enable_front_app_accessibility()
+        focused = self._focused_element()
+        target = self._editable_target() if focused is not None else None
+        self._replace_target = target
+        self._replace_range = None
+        if target is not None:
+            self._replace_range = hotkey._ax_value(
+                target, ApplicationServices.kAXSelectedTextRangeAttribute
+            )
+            return True
+        # ChatGPT and Teams draw the composer inside a web view that never
+        # publishes a focused text element. The selection is still live, and
+        # Replace pastes over it. A focused element that is not editable, such
+        # as a normal read-only page, still hides Replace.
+        return focused is None and self._source_app is not None
+
+    @objc.python_method
+    def _attribute_is_settable(self, element, attribute) -> bool:
+        try:
+            result = ApplicationServices.AXUIElementIsAttributeSettable(
+                element, attribute, None
+            )
+        except Exception:
+            log(traceback.format_exc())
+            return False
+        if isinstance(result, tuple):
+            return (
+                bool(result)
+                and int(result[0] or 0) == 0
+                and len(result) > 1
+                and bool(result[1])
+            )
+        return bool(result)
+
+    @objc.python_method
+    def _has_text_caret(self, element) -> bool:
+        value = hotkey._ax_value(
+            element, ApplicationServices.kAXInsertionPointLineNumberAttribute
+        )
+        try:
+            line = int(value)
+        except (TypeError, ValueError):
+            return False
+        return 0 <= line < 1_000_000
+
+    @objc.python_method
+    def _editable_in_chain(self, element):
+        current = element
+        for _ in range(10):
+            if current is None:
+                return None
+            role = hotkey._ax_value(current, ApplicationServices.kAXRoleAttribute)
+            role = str(role) if role else ""
+            writable = (
+                self._attribute_is_settable(
+                    current, ApplicationServices.kAXSelectedTextAttribute
+                )
+                or self._attribute_is_settable(
+                    current, ApplicationServices.kAXValueAttribute
+                )
+                or self._attribute_is_settable(
+                    current, ApplicationServices.kAXSelectedTextRangeAttribute
+                )
+            )
+            if role in TEXT_INPUT_ROLES and writable:
+                return current
+            if self._attribute_is_settable(
+                current, ApplicationServices.kAXSelectedTextAttribute
+            ):
+                return current
+            if role == "AXWebArea" and self._has_text_caret(current):
+                return current
+            if role in ("AXWindow", "AXApplication"):
+                return None
+            parent = hotkey._ax_value(current, ApplicationServices.kAXParentAttribute)
+            if parent is not None:
+                ApplicationServices.AXUIElementSetMessagingTimeout(parent, 0.25)
+            current = parent
+        return None
+
+    @objc.python_method
+    def _editable_target(self):
+        hotkey.enable_front_app_accessibility()
+        focused = self._focused_element()
+        if focused is None:
+            return None
+        target = self._editable_in_chain(focused)
+        if target is not None:
+            return target
+        current = focused
+        web = None
+        for _ in range(10):
+            if current is None:
+                break
+            role = hotkey._ax_value(current, ApplicationServices.kAXRoleAttribute)
+            if str(role or "") == "AXWebArea":
+                web = current
+                break
+            if str(role or "") in ("AXWindow", "AXApplication"):
+                break
+            current = hotkey._ax_value(current, ApplicationServices.kAXParentAttribute)
+        if web is None:
+            return None
+        try:
+            ApplicationServices.AXUIElementSetAttributeValue(
+                web, "AXEnhancedUserInterface", True
+            )
+        except Exception:
+            log(traceback.format_exc())
+            return None
+        return self._editable_in_chain(self._focused_element())
+
+    @objc.python_method
+    def _ax_error(self, error) -> int:
+        if isinstance(error, tuple):
+            error = error[0] if error else 0
+        try:
+            return int(error or 0)
+        except (TypeError, ValueError):
+            return -1
+
+    @objc.python_method
+    def _selected_write_applied(
+        self, target, text, error, before_selected, before_value, current
+    ) -> bool:
+        if current is not None and str(current) == text:
+            return True
+        if error != 0 or current is None:
+            return error == 0 and current is None
+        if str(current) != "":
+            return False
+        # Notes clears the selection after a replace, so an empty selection
+        # with a changed field means the write already landed. Pasting again
+        # would insert a second copy.
+        after_value = hotkey._ax_value(target, ApplicationServices.kAXValueAttribute)
+        if before_value is None or after_value is None:
+            return True
+        if str(after_value) != str(before_value):
+            return True
+        return str(before_selected or "") == text
+
+    @objc.python_method
+    def _write_selected_text(self, target, text: str) -> bool:
+        try:
+            ApplicationServices.AXUIElementSetAttributeValue(
+                target, ApplicationServices.kAXFocusedAttribute, True
+            )
+        except Exception:
+            log(traceback.format_exc())
+        if self._replace_range is not None and self._attribute_is_settable(
+            target, ApplicationServices.kAXSelectedTextRangeAttribute
+        ):
+            ApplicationServices.AXUIElementSetAttributeValue(
+                target,
+                ApplicationServices.kAXSelectedTextRangeAttribute,
+                self._replace_range,
+            )
+        attribute = ApplicationServices.kAXSelectedTextAttribute
+        if self._attribute_is_settable(target, attribute):
+            before_selected = hotkey._ax_value(target, attribute)
+            before_value = hotkey._ax_value(
+                target, ApplicationServices.kAXValueAttribute
+            )
+            error = self._ax_error(
+                ApplicationServices.AXUIElementSetAttributeValue(target, attribute, text)
+            )
+            current = hotkey._ax_value(target, attribute)
+            if self._selected_write_applied(
+                target, text, error, before_selected, before_value, current
+            ):
+                return True
+        value = hotkey._ax_value(target, ApplicationServices.kAXValueAttribute)
+        if (
+            value is not None
+            and str(value) == self._menu_text
+            and self._attribute_is_settable(target, ApplicationServices.kAXValueAttribute)
+        ):
+            error = self._ax_error(
+                ApplicationServices.AXUIElementSetAttributeValue(
+                    target, ApplicationServices.kAXValueAttribute, text
+                )
+            )
+            if error == 0:
+                return True
+        return False
+
+    @objc.python_method
+    def _paste_into_source(self, text: str) -> None:
+        pasteboard = NSPasteboard.generalPasteboard()
+        saved = hotkey._snapshot(pasteboard)
+        self._copy_text(text)
+        app = self._source_app
+        pid = int(app.processIdentifier()) if app is not None else 0
+        if app is not None:
+            app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+
+        def paste() -> None:
+            if pid:
+                hotkey.send_paste_to(pid)
+            else:
+                hotkey.send_paste()
+
+            def restore() -> None:
+                hotkey._restore(NSPasteboard.generalPasteboard(), saved)
+
+            AppHelper.callLater(1.2, restore)
+
+        AppHelper.callLater(0.2, paste)
+
+    @objc.python_method
+    def _replace_selection(self, text: str) -> bool:
+        if not text:
+            return False
+        target = self._replace_target
+        if target is not None and self._write_selected_text(target, text):
+            log("replace wrote the selection")
+            return True
+        if target is None and self._source_app is None:
+            return False
+        log("replace pasting into the source app")
+        self._paste_into_source(text)
+        return True
+
+    @objc.python_method
+    def _on_menu_event(self, event: dict) -> None:
+        kind = event.get("event")
+        if kind == "dismiss":
+            self._menu_open = False
+            if self._menu_speaking:
+                self._menu_speaking = False
+                self._cancel_menu_speech()
+            return
+        if kind == "speak":
+            text = self._menu_text
+            if text:
+                threading.Thread(
+                    target=self.speak,
+                    args=(text,),
+                    kwargs={"from_menu": True},
+                    daemon=True,
+                ).start()
+            return
+        if kind == "language":
+            return
+        if kind == "replace":
+            self._menu_open = False
+            text = str(event.get("text") or "")
+            if self._replace_selection(text):
+                self.set_status("Replaced")
+            else:
+                self._copy_text(text)
+                self.set_status("Copied")
+            return
+        if kind == "copy":
+            self._menu_open = False
+            self._copy_text(str(event.get("text") or ""))
+            self.set_status("Copied")
 
     @objc.python_method
     def _begin_copy(self):
@@ -700,7 +1242,7 @@ class KokoroApp(NSObject):
             hotkey._restore(pasteboard, self._copy["saved"])
             self._copy = None
             if text:
-                threading.Thread(target=self.speak, args=(text,), daemon=True).start()
+                self._open_menu(text)
             else:
                 NSBeep()
             return
@@ -722,6 +1264,23 @@ class KokoroApp(NSObject):
         keycode = int(
             Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
         )
+        if self._menu_open:
+            repeat = int(
+                Quartz.CGEventGetIntegerValueField(
+                    event, Quartz.kCGKeyboardEventAutorepeat
+                )
+            )
+            if keycode == 53:
+                if not repeat:
+                    AppHelper.callAfter(self._close_menu)
+                return None
+            number = MENU_KEYS.get(keycode)
+            if number is not None:
+                if not repeat:
+                    AppHelper.callAfter(
+                        lambda number=number: self._menu_send({"cmd": "key", "key": number})
+                    )
+                return None
         if keycode != int(self.config["keyCode"]):
             return event
         flags = int(Quartz.CGEventGetFlags(event)) & (CONTROL | OPTION | SHIFT | COMMAND)
@@ -750,7 +1309,11 @@ class KokoroApp(NSObject):
             None,
         )
         if tap is None:
-            log("event tap was not created")
+            try:
+                granted = bool(Quartz.CGPreflightListenEventAccess())
+            except Exception:
+                granted = False
+            log(f"event tap was not created; input monitoring={granted}")
             self.rebuild_menu()
             AppHelper.callLater(3.0, self._install_tap)
             return
@@ -782,7 +1345,7 @@ class KokoroApp(NSObject):
     def _build_window(self):
         style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
         window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, 520, 280),
+            NSMakeRect(0, 0, 520, 360),
             style,
             NSBackingStoreBuffered,
             False,
@@ -792,7 +1355,24 @@ class KokoroApp(NSObject):
         window.center()
         window.setDelegate_(self)
         content = window.contentView()
+        tabs = NSTabView.alloc().initWithFrame_(content.bounds())
+        general_item = NSTabViewItem.alloc().initWithIdentifier_("general")
+        general_item.setLabel_("General")
+        general = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 520, 300))
+        self._build_general_tab(general)
+        general_item.setView_(general)
+        translate_item = NSTabViewItem.alloc().initWithIdentifier_("translate")
+        translate_item.setLabel_("Translate")
+        translate = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 520, 300))
+        self._build_translate_tab(translate)
+        translate_item.setView_(translate)
+        tabs.addTabViewItem_(general_item)
+        tabs.addTabViewItem_(translate_item)
+        content.addSubview_(tabs)
+        self._window = window
 
+    @objc.python_method
+    def _build_general_tab(self, content):
         content.addSubview_(self._label("Model", 24, 228, 90, 24))
         self.model_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
             NSMakeRect(120, 224, 376, 28), False
@@ -831,7 +1411,7 @@ class KokoroApp(NSObject):
         content.addSubview_(self.record_button)
 
         hint = self._label(
-            "Default shortcut is Option+`. On the ABC layout that key is a dead key, so add Control if it does not fire.",
+            "The shortcut opens the action menu. Default is Option+`. Add Control if that dead key does not fire.",
             24,
             78,
             472,
@@ -851,7 +1431,57 @@ class KokoroApp(NSObject):
         content.addSubview_(stop)
         self.status_field = self._label("Ready", 284, 28, 212, 24)
         content.addSubview_(self.status_field)
-        self._window = window
+
+    @objc.python_method
+    def _build_translate_tab(self, content):
+        content.addSubview_(
+            self._label(
+                "Choose a language for each kind of selection. Ask each time opens the language wheel.",
+                24,
+                230,
+                472,
+                40,
+            )
+        )
+        content.addSubview_(self._label("Editable text", 24, 180, 140, 24))
+        self.editable_language_popup = self._language_popup(
+            NSMakeRect(180, 176, 316, 28), "translateEditableChanged:"
+        )
+        content.addSubview_(self.editable_language_popup)
+        content.addSubview_(self._label("Read-only text", 24, 124, 140, 24))
+        self.read_only_language_popup = self._language_popup(
+            NSMakeRect(180, 120, 316, 28), "translateReadOnlyChanged:"
+        )
+        content.addSubview_(self.read_only_language_popup)
+        content.addSubview_(
+            self._label(
+                "Editable text is a selection in a field you can type in. Read-only text cannot be changed.",
+                24,
+                64,
+                472,
+                40,
+            )
+        )
+
+    @objc.python_method
+    def _language_popup(self, frame, action: str):
+        popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(frame, False)
+        popup.addItemWithTitle_("Ask each time")
+        popup.lastItem().setRepresentedObject_("")
+        for code, title in TRANSLATE_LANGUAGES:
+            popup.addItemWithTitle_(title)
+            popup.lastItem().setRepresentedObject_(code)
+        popup.setTarget_(self)
+        popup.setAction_(action)
+        return popup
+
+    @objc.python_method
+    def _default_translate_language(self, editable: bool) -> str:
+        key = "translateEditable" if editable else "translateReadOnly"
+        code = self.config.get(key)
+        if isinstance(code, str) and code in TRANSLATE_LANGUAGE_CODES:
+            return code
+        return ""
 
     @objc.python_method
     def _label(self, text: str, x: float, y: float, width: float, height: float):
@@ -871,6 +1501,12 @@ class KokoroApp(NSObject):
             self._select_voice(voice)
         self.shortcut_field.setStringValue_(
             shortcut_label(self.config["keyCode"], self.config["modifiers"])
+        )
+        self._select_language(
+            self.editable_language_popup, self.config.get("translateEditable") or ""
+        )
+        self._select_language(
+            self.read_only_language_popup, self.config.get("translateReadOnly") or ""
         )
 
     def applicationShouldTerminateAfterLastWindowClosed_(self, sender):
@@ -897,6 +1533,31 @@ class KokoroApp(NSObject):
                 self.voice_popup.selectItem_(item)
                 return True
         return False
+
+    @objc.python_method
+    def _select_language(self, popup, code: str) -> None:
+        if code not in TRANSLATE_LANGUAGE_CODES:
+            code = ""
+        for item in popup.menu().itemArray():
+            if str(item.representedObject() or "") == code:
+                popup.selectItem_(item)
+                return
+        popup.selectItemAtIndex_(0)
+
+    def translateEditableChanged_(self, sender):
+        self._save_translate_default("translateEditable", sender)
+
+    def translateReadOnlyChanged_(self, sender):
+        self._save_translate_default("translateReadOnly", sender)
+
+    @objc.python_method
+    def _save_translate_default(self, key: str, sender) -> None:
+        code = str(sender.selectedItem().representedObject() or "")
+        if code in TRANSLATE_LANGUAGE_CODES:
+            self.config[key] = code
+        else:
+            self.config.pop(key, None)
+        save_config(self.config)
 
     def voiceChanged_(self, sender):
         voice = str(sender.selectedItem().representedObject() or "")
@@ -957,6 +1618,14 @@ class KokoroApp(NSObject):
         del sender
         self.handle_hotkey()
 
+    def showActions_(self, sender):
+        del sender
+        value = NSPasteboard.generalPasteboard().stringForType_(NSPasteboardTypeString)
+        text = str(value).strip() if value else ""
+        if not text:
+            text = "hey can you send me that file when you get a chance thanks"
+        self._open_menu(text)
+
     def stopSpeech_(self, sender):
         del sender
         self.stop_speech()
@@ -983,6 +1652,9 @@ class KokoroApp(NSObject):
     def quitApp_(self, sender):
         del sender
         self.player.stop()
+        proc = self._menu_proc
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
         NSApp.terminate_(None)
 
 
