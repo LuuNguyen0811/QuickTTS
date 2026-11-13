@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a macOS squircle app icon and a menu-bar template from the waveform."""
+"""Build the app icon from the waveform, and the page and menu-bar marks from the chicken."""
 
 from pathlib import Path
 
@@ -18,17 +18,11 @@ from Foundation import NSMakeSize
 
 ROOT = Path(__file__).resolve().parent
 SOURCE = ROOT / "source-waveform.png"
+CHICKEN = ROOT / "source-chicken.png"
+DOCS_ICON = ROOT.parent / "docs" / "icon.png"
 ICONSET = ROOT / "AppIcon.iconset"
 
-# Measured from the source artwork, in source pixels.
-BARS = (
-    (62, 95, 173, 270),
-    (120, 154, 103, 340),
-    (178, 213, 39, 403),
-    (236, 271, 125, 318),
-    (295, 329, 77, 366),
-    (353, 387, 157, 286),
-)
+# Measured from the waveform artwork, in source pixels.
 ART_BOX = (62, 39, 387, 403)
 
 
@@ -109,33 +103,137 @@ def render_square(waveform: NSImage, size: int) -> NSBitmapImageRep:
     return NSBitmapImageRep.imageRepWithData_(canvas.TIFFRepresentation())
 
 
-def render_menubar(size: int) -> NSBitmapImageRep:
-    from AppKit import NSBezierPath
+def chicken_cover(red, green, blue):
+    """How much of this pixel is the chicken, not the black tile or the navy mat."""
+    if blue < 0.28 or green < 0.15:
+        return 0.0
+    return min(1.0, max(0.0, (min(green, blue) - 0.14) / 0.12))
 
-    x0, y0, x1, y1 = ART_BOX
-    art_w = x1 - x0 + 1
-    art_h = y1 - y0 + 1
-    pad = size * 0.06
+
+def is_mat(red, green, blue):
+    return (
+        blue > 0.05
+        and red < 0.12
+        and green < 0.30
+        and blue > red + 0.04
+        and chicken_cover(red, green, blue) == 0.0
+    )
+
+
+def _components(bitmap, x, y):
+    color = bitmap.colorAtX_y_(x, y)
+    return (
+        color.redComponent(),
+        color.greenComponent(),
+        color.blueComponent(),
+        color.alphaComponent(),
+    )
+
+
+def cleaned_chicken(source) -> NSBitmapImageRep:
+    """Crop the artwork and drop the navy mat around the rounded tile."""
+    width = source.pixelsWide()
+    height = source.pixelsHigh()
+    outside = [[False] * width for _ in range(height)]
+    stack = []
+    for x in range(width):
+        stack.append((x, 0))
+        stack.append((x, height - 1))
+    for y in range(height):
+        stack.append((0, y))
+        stack.append((width - 1, y))
+    while stack:
+        x, y = stack.pop()
+        if x < 0 or y < 0 or x >= width or y >= height or outside[y][x]:
+            continue
+        red, green, blue, _alpha = _components(source, x, y)
+        if not is_mat(red, green, blue):
+            continue
+        outside[y][x] = True
+        stack.extend(((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)))
+
+    min_x, min_y, max_x, max_y = width, height, 0, 0
+    for y in range(height):
+        for x in range(width):
+            if outside[y][x]:
+                continue
+            min_x, min_y = min(min_x, x), min(min_y, y)
+            max_x, max_y = max(max_x, x), max(max_y, y)
+    side = max(max_x - min_x + 1, max_y - min_y + 1)
+    bitmap = empty_bitmap(side, side)
+    clear = NSColor.colorWithCalibratedRed_green_blue_alpha_(0, 0, 0, 0)
+    offset_x = (side - (max_x - min_x + 1)) // 2
+    offset_y = (side - (max_y - min_y + 1)) // 2
+    for y in range(side):
+        for x in range(side):
+            src_x = min_x + x - offset_x
+            src_y = min_y + y - offset_y
+            if (
+                src_x < 0
+                or src_y < 0
+                or src_x >= width
+                or src_y >= height
+                or outside[src_y][src_x]
+            ):
+                bitmap.setColor_atX_y_(clear, x, y)
+                continue
+            red, green, blue, alpha = _components(source, src_x, src_y)
+            bitmap.setColor_atX_y_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                    red, green, blue, alpha
+                ),
+                x,
+                y,
+            )
+    return bitmap
+
+
+def chicken_template(size: int) -> NSBitmapImageRep:
+    from AppKit import NSGraphicsContext, NSImageInterpolationHigh
+
+    source = NSImage.alloc().initWithContentsOfFile_(str(CHICKEN))
+    bitmap = NSBitmapImageRep.imageRepWithData_(source.TIFFRepresentation())
+    width = bitmap.pixelsWide()
+    height = bitmap.pixelsHigh()
+    silhouette = empty_bitmap(width, height)
+    min_x, min_y, max_x, max_y = width, height, 0, 0
+    for y in range(height):
+        for x in range(width):
+            red, green, blue, alpha = _components(bitmap, x, y)
+            cover = chicken_cover(red, green, blue) * alpha
+            silhouette.setColor_atX_y_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(0, 0, 0, cover),
+                x,
+                y,
+            )
+            if cover > 0.2:
+                min_x, min_y = min(min_x, x), min(min_y, y)
+                max_x, max_y = max(max_x, x), max(max_y, y)
+    art_w = max_x - min_x + 1
+    art_h = max_y - min_y + 1
+    pad = size * 0.08
     scale = min((size - pad * 2) / art_w, (size - pad * 2) / art_h)
     drawn_w = art_w * scale
     drawn_h = art_h * scale
     origin_x = (size - drawn_w) / 2
     origin_y = (size - drawn_h) / 2
-    canvas = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
-    canvas.lockFocus()
-    NSColor.blackColor().set()
-    for left, right, top, bottom in BARS:
-        rx = origin_x + (left - x0) * scale
-        rw = (right - left + 1) * scale
-        cocoa_top = origin_y + (y1 - top) * scale
-        cocoa_bottom = origin_y + (y1 - bottom) * scale
-        rect = NSMakeRect(rx, cocoa_bottom, rw, cocoa_top - cocoa_bottom)
-        radius = rw / 2
-        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-            rect, radius, radius
-        ).fill()
-    canvas.unlockFocus()
-    return NSBitmapImageRep.imageRepWithData_(canvas.TIFFRepresentation())
+    artwork = image_from_bitmap(silhouette)
+    canvas = empty_bitmap(size, size)
+    clear = NSColor.colorWithCalibratedRed_green_blue_alpha_(0, 0, 0, 0)
+    for y in range(size):
+        for x in range(size):
+            canvas.setColor_atX_y_(clear, x, y)
+    context = NSGraphicsContext.graphicsContextWithBitmapImageRep_(canvas)
+    NSGraphicsContext.setCurrentContext_(context)
+    context.setImageInterpolation_(NSImageInterpolationHigh)
+    artwork.drawInRect_fromRect_operation_fraction_(
+        NSMakeRect(origin_x, origin_y, drawn_w, drawn_h),
+        NSMakeRect(min_x, height - max_y - 1, art_w, art_h),
+        NSCompositingOperationSourceOver,
+        1.0,
+    )
+    NSGraphicsContext.setCurrentContext_(None)
+    return canvas
 
 
 def main():
@@ -144,8 +242,14 @@ def main():
     wave = image_from_bitmap(wave_bitmap)
     icon = render_square(wave, 1024)
     write_png(icon, ROOT / "AppIcon-1024.png")
-    write_png(render_menubar(36), ROOT / "menubarTemplate.png")
-    write_png(render_menubar(18), ROOT / "menubarTemplate-18.png")
+    write_png(chicken_template(72), ROOT / "menubarTemplate.png")
+    write_png(chicken_template(18), ROOT / "menubarTemplate-18.png")
+    if CHICKEN.is_file():
+        page = NSImage.alloc().initWithContentsOfFile_(str(CHICKEN))
+        write_png(
+            NSBitmapImageRep.imageRepWithData_(page.TIFFRepresentation()),
+            DOCS_ICON,
+        )
 
     ICONSET.mkdir(exist_ok=True)
     master = NSImage.alloc().initWithContentsOfFile_(str(ROOT / "AppIcon-1024.png"))

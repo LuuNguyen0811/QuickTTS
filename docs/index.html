@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>QuickTTS</title>
-  <meta name="description" content="Speak selected text from the menu bar. On your Mac. No API key.">
+  <title>ChickEN</title>
+  <meta name="description" content="Speak, proofread, rewrite and translate selected text from the menu bar. On your Mac. No API key.">
   <link rel="icon" href="icon.png">
   <style>
     :root {
@@ -117,11 +117,22 @@
       font-size: 0.9rem;
     }
 
+    .video,
     .demo,
     .install {
       margin-top: 2.75rem;
       padding-top: 1.75rem;
       border-top: 1px solid var(--line);
+    }
+
+    .video video {
+      display: block;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 16 / 9;
+      border: 1px solid var(--line);
+      border-radius: 1rem;
+      background: #000;
     }
 
     .sentence {
@@ -200,20 +211,20 @@
 </head>
 <body>
   <main>
-    <img class="mark" src="icon.png" alt="" width="2048" height="2048">
-    <h1>QuickTTS</h1>
-    <p class="lede">Speak selected text from the menu bar. On your Mac. No API key.</p>
-    <a class="download" href="https://github.com/LuuNguyen0811/QuickTTS/releases/download/v1.0.0/QuickTTS.dmg">Download for macOS</a>
+    <img class="mark" src="icon.png" alt="" width="248" height="248">
+    <h1>ChickEN</h1>
+    <p class="lede">Speak, proofread, rewrite and translate selected text from the menu bar. On your Mac. No API key.</p>
+    <a class="download" href="https://github.com/LuuNguyen0811/QuickTTS/releases/download/v1.0.0/ChickEN.dmg">Download for macOS</a>
     <p class="meta">Apple silicon · about 451 MB</p>
 
     <ul class="points">
       <li>
         <strong>Menu bar only</strong>
-        <span>A speaker icon in the menu bar. It does not stay in the Dock.</span>
+        <span>A chicken icon in the menu bar. It does not stay in the Dock.</span>
       </li>
       <li>
         <strong>Option+`</strong>
-        <span>The default shortcut speaks whatever text is selected.</span>
+        <span>The default shortcut opens a menu at the pointer: Speak, Proofread, Rewrite, Translate.</span>
       </li>
       <li>
         <strong>Two qualities</strong>
@@ -221,9 +232,17 @@
       </li>
     </ul>
 
+    <section class="video">
+      <h2>See it</h2>
+      <video controls playsinline preload="metadata" poster="demo/ChickEN-demo-poster.jpg" src="demo/ChickEN-demo.mp4">
+        <a href="demo/ChickEN-demo.mp4">Watch the demo video</a>
+      </video>
+      <p class="note">Select text, press the shortcut, then pick Speak, Proofread, Rewrite or Translate. Proofread and Rewrite use Apple Intelligence on macOS 26.</p>
+    </section>
+
     <section class="demo">
       <h2>Hear it</h2>
-      <p class="sentence">“QuickTTS reads the words you select, straight from the menu bar.”</p>
+      <p class="sentence">“ChickEN reads the words you select, straight from the menu bar.”</p>
       <ul class="clips">
         <li>
           <div class="who">
@@ -253,12 +272,12 @@
     <section class="install">
       <h2>Install</h2>
       <ol>
-        <li>Open <strong>QuickTTS.dmg</strong>.</li>
-        <li>Drag <strong>QuickTTS</strong> onto <strong>Applications</strong>.</li>
-        <li>Open <strong>QuickTTS</strong> from Applications.</li>
-        <li>If macOS says it cannot open the app, right-click QuickTTS, choose <strong>Open</strong>, then <strong>Open</strong> again. The app is not notarized with Apple.</li>
+        <li>Open <strong>ChickEN.dmg</strong>.</li>
+        <li>Drag <strong>ChickEN</strong> onto <strong>Applications</strong>.</li>
+        <li>Open <strong>ChickEN</strong> from Applications.</li>
+        <li>If macOS says it cannot open the app, right-click ChickEN, choose <strong>Open</strong>, then <strong>Open</strong> again. The app is not notarized with Apple.</li>
       </ol>
-      <p class="note">Allow QuickTTS once under <strong>System Settings → Privacy &amp; Security → Accessibility</strong> and <strong>Input Monitoring</strong>. That lets the shortcut read the selection in every app.</p>
+      <p class="note">Allow ChickEN once under <strong>System Settings → Privacy &amp; Security → Accessibility</strong> and <strong>Input Monitoring</strong>. That lets the shortcut read the selection in every app.</p>
     </section>
   </main>
 </body>

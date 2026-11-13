@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Menu bar QuickTTS app. Change model, voice, and shortcut from Settings."""
+"""Menu bar ChickEN app. Change model, voice, and shortcut from Settings."""
 
 import ctypes
 import ctypes.util
@@ -26,9 +26,9 @@ from AppKit import (
     NSApplicationActivationPolicyAccessory,
     NSBackingStoreBuffered,
     NSBeep,
-    NSBezierPath,
     NSButton,
     NSColor,
+    NSCompositingOperationSourceOver,
     NSEvent,
     NSEventMaskKeyDown,
     NSImage,
@@ -54,7 +54,7 @@ from PyObjCTools import AppHelper
 
 import hotkey
 
-APP_NAME = "QuickTTS"
+APP_NAME = "ChickEN"
 MAX_CHARS = 4000
 TEXT_INPUT_ROLES = frozenset(
     {"AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"}
@@ -128,51 +128,25 @@ def menu_bar_image():
 
 
 def speaking_frames(count: int = 8):
-    """Equalizer frames of the menu-bar waveform, same layout as the idle icon."""
-    bars = (
-        (62, 95, 173, 270),
-        (120, 154, 103, 340),
-        (178, 213, 39, 403),
-        (236, 271, 125, 318),
-        (295, 329, 77, 366),
-        (353, 387, 157, 286),
-    )
-    x0, y0, x1, y1 = 62, 39, 387, 403
+    """Pulse the menu-bar chicken while a clip is playing."""
+    base = menu_bar_image()
+    if base is None:
+        return []
     size = 18.0
-    art_w = x1 - x0 + 1
-    art_h = y1 - y0 + 1
-    pad = size * 0.06
-    scale = min((size - pad * 2) / art_w, (size - pad * 2) / art_h)
-    origin_x = (size - art_w * scale) / 2
-    origin_y = (size - art_h * scale) / 2
-    layout = []
-    for left, right, top, bottom in bars:
-        width = (right - left + 1) * scale
-        cocoa_top = origin_y + (y1 - top) * scale
-        cocoa_bottom = origin_y + (y1 - bottom) * scale
-        layout.append(
-            (
-                origin_x + (left - x0) * scale,
-                width,
-                (cocoa_top + cocoa_bottom) / 2,
-                cocoa_top - cocoa_bottom,
-            )
-        )
-
     frames = []
     for frame in range(count):
+        phase = 2 * math.pi * frame / count
+        scale = 0.84 + 0.16 * (0.5 + 0.5 * math.sin(phase))
+        drawn = size * scale
+        origin = (size - drawn) / 2
         image = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
         image.lockFocus()
-        NSColor.blackColor().set()
-        for index, (x, width, center, height) in enumerate(layout):
-            phase = 2 * math.pi * frame / count - index * (math.pi / 3)
-            factor = 0.22 + 0.78 * (0.5 + 0.5 * math.sin(phase))
-            bar_h = max(width, height * factor)
-            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                NSMakeRect(x, center - bar_h / 2, width, bar_h),
-                width / 2,
-                width / 2,
-            ).fill()
+        base.drawInRect_fromRect_operation_fraction_(
+            NSMakeRect(origin, origin, drawn, drawn),
+            NSZeroRect,
+            NSCompositingOperationSourceOver,
+            1.0,
+        )
         image.unlockFocus()
         image.setTemplate_(True)
         frames.append(image)
@@ -188,10 +162,19 @@ def app_root() -> Path:
 def support_dir() -> Path:
     path = Path.home() / "Library" / "Application Support" / APP_NAME
     path.mkdir(parents=True, exist_ok=True)
-    legacy = Path.home() / "Library" / "Application Support" / "Kokoro" / "config.json"
     config = path / "config.json"
-    if not config.exists() and legacy.is_file():
-        config.write_bytes(legacy.read_bytes())
+    if not config.exists():
+        for legacy_name in ("QuickTTS", "Kokoro"):
+            legacy = (
+                Path.home()
+                / "Library"
+                / "Application Support"
+                / legacy_name
+                / "config.json"
+            )
+            if legacy.is_file():
+                config.write_bytes(legacy.read_bytes())
+                break
     return path
 
 
@@ -202,7 +185,7 @@ def config_file() -> Path:
 def log_file() -> Path:
     path = Path.home() / "Library" / "Logs" / APP_NAME
     path.mkdir(parents=True, exist_ok=True)
-    return path / "quicktts.log"
+    return path / "chicken.log"
 
 
 def log(message: str) -> None:
@@ -676,7 +659,7 @@ class KokoroApp(NSObject):
             menu.addItem_(permissions)
         menu.addItem_(NSMenuItem.separatorItem())
         quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Quit QuickTTS", "quitApp:", ""
+            f"Quit {APP_NAME}", "quitApp:", ""
         )
         quit_item.setTarget_(self)
         menu.addItem_(quit_item)
@@ -838,8 +821,8 @@ class KokoroApp(NSObject):
     @objc.python_method
     def _menu_binary(self) -> Path:
         if getattr(sys, "frozen", False):
-            return Path(sys.executable).resolve().parent / "QuickTTSMenu"
-        return Path(__file__).resolve().parent / "helper" / "QuickTTSMenu"
+            return Path(sys.executable).resolve().parent / "ChickENMenu"
+        return Path(__file__).resolve().parent / "helper" / "ChickENMenu"
 
     @objc.python_method
     def _ensure_menu(self) -> None:
@@ -1350,7 +1333,7 @@ class KokoroApp(NSObject):
             NSBackingStoreBuffered,
             False,
         )
-        window.setTitle_("QuickTTS Settings")
+        window.setTitle_(f"{APP_NAME} Settings")
         window.setReleasedWhenClosed_(False)
         window.center()
         window.setDelegate_(self)

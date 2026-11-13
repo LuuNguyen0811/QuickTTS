@@ -579,14 +579,16 @@ struct MenuRoot: View {
                     if model.selectionEditable {
                         Text("Replace")
                             .frame(maxWidth: .infinity)
+                            .frame(height: 32)
+                            .background(Color.white.opacity(0.14), in: Capsule())
                     }
                     Text("Copy")
                         .frame(maxWidth: .infinity)
+                        .frame(height: 32)
+                        .background(Color.white.opacity(0.14), in: Capsule())
                 }
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(height: 32)
-                .background(Color.white.opacity(0.14), in: Capsule())
             }
         }
         .padding(14)

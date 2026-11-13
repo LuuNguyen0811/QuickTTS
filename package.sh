@@ -7,9 +7,9 @@ PY="$ROOT/.venv/bin/python"
 "$PY" "$ROOT/ensure_models.py"
 "$PY" "$ROOT/assets/make_icons.py"
 iconutil -c icns "$ROOT/assets/AppIcon.iconset" -o "$ROOT/assets/AppIcon.icns"
-"$PY" -m PyInstaller --noconfirm --windowed --name QuickTTS \
+"$PY" -m PyInstaller --noconfirm --windowed --name ChickEN \
   --icon "$ROOT/assets/AppIcon.icns" \
-  --osx-bundle-identifier local.quicktts \
+  --osx-bundle-identifier local.chicken \
   --collect-all kokoro_onnx \
   --collect-all espeakng_loader \
   --collect-all phonemizer \
@@ -27,11 +27,11 @@ iconutil -c icns "$ROOT/assets/AppIcon.iconset" -o "$ROOT/assets/AppIcon.icns"
   --hidden-import hotkey \
   kokoro_app.py
 
-PLIST="$ROOT/dist/QuickTTS.app/Contents/Info.plist"
+PLIST="$ROOT/dist/ChickEN.app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$PLIST" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$PLIST"
-/usr/libexec/PlistBuddy -c "Set :CFBundleName QuickTTS" "$PLIST"
-/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName QuickTTS" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleName ChickEN" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName ChickEN" "$PLIST"
 /usr/libexec/PlistBuddy -c "Delete :LSEnvironment" "$PLIST" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :LSEnvironment dict" "$PLIST"
 /usr/libexec/PlistBuddy -c "Add :LSEnvironment:MallocLargeCache string 0" "$PLIST"
@@ -42,13 +42,13 @@ xcrun --sdk macosx swiftc -O -swift-version 5 -target arm64-apple-macosx15.0 \
   -sdk "$SDK" \
   -framework SwiftUI -framework AppKit -framework Translation \
   -Xlinker -weak_framework -Xlinker FoundationModels \
-  -o "$ROOT/helper/QuickTTSMenu" \
-  "$ROOT/helper/QuickTTSMenu.swift"
-cp "$ROOT/helper/QuickTTSMenu" "$ROOT/dist/QuickTTS.app/Contents/MacOS/QuickTTSMenu"
+  -o "$ROOT/helper/ChickENMenu" \
+  "$ROOT/helper/ChickENMenu.swift"
+cp "$ROOT/helper/ChickENMenu" "$ROOT/dist/ChickEN.app/Contents/MacOS/ChickENMenu"
 SIGN_DIR="$ROOT/.signing"
-KEYCHAIN="$SIGN_DIR/quicktts.keychain-db"
-SIGN_PASS="quicktts-local"
-SIGN_NAME="QuickTTS Local"
+KEYCHAIN="$SIGN_DIR/chicken.keychain-db"
+SIGN_PASS="chicken-local"
+SIGN_NAME="ChickEN Local"
 mkdir -p "$SIGN_DIR"
 if ! security find-certificate -c "$SIGN_NAME" "$KEYCHAIN" >/dev/null 2>&1; then
   CONFIG="$SIGN_DIR/codesign.cnf"
@@ -58,7 +58,7 @@ distinguished_name = dn
 prompt = no
 x509_extensions = codesign_ext
 [dn]
-CN = QuickTTS Local
+CN = ChickEN Local
 [codesign_ext]
 basicConstraints = critical,CA:FALSE
 keyUsage = critical,digitalSignature
@@ -85,21 +85,21 @@ EOF
   rm -f "$SIGN_DIR/key.pem" "$SIGN_DIR/cert.pem" "$SIGN_DIR/cert.p12" "$CONFIG"
 fi
 security unlock-keychain -p "$SIGN_PASS" "$KEYCHAIN"
-codesign --force --deep --sign "$SIGN_NAME" --keychain "$KEYCHAIN" "$ROOT/dist/QuickTTS.app"
+codesign --force --deep --sign "$SIGN_NAME" --keychain "$KEYCHAIN" "$ROOT/dist/ChickEN.app"
 
 echo "self-test"
 rm -f /tmp/kokoro-app-self-test.txt
-"$ROOT/dist/QuickTTS.app/Contents/MacOS/QuickTTS" --self-test
+"$ROOT/dist/ChickEN.app/Contents/MacOS/ChickEN" --self-test
 cat /tmp/kokoro-app-self-test.txt
 
 if [[ "${SKIP_DMG:-0}" == 1 ]]; then
-  echo "built $ROOT/dist/QuickTTS.app"
+  echo "built $ROOT/dist/ChickEN.app"
   exit 0
 fi
 STAGE="$(mktemp -d)"
-cp -R "$ROOT/dist/QuickTTS.app" "$STAGE/QuickTTS.app"
+cp -R "$ROOT/dist/ChickEN.app" "$STAGE/ChickEN.app"
 ln -s /Applications "$STAGE/Applications"
-hdiutil create -volname QuickTTS -srcfolder "$STAGE" -ov -format UDZO "$ROOT/QuickTTS.dmg"
+hdiutil create -volname ChickEN -srcfolder "$STAGE" -ov -format UDZO "$ROOT/ChickEN.dmg"
 rm -rf "$STAGE"
-ls -lh "$ROOT/QuickTTS.dmg"
-echo "built $ROOT/QuickTTS.dmg"
+ls -lh "$ROOT/ChickEN.dmg"
+echo "built $ROOT/ChickEN.dmg"
