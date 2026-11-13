@@ -55,7 +55,7 @@ def _report(report, message: str) -> None:
 def _download(path: Path, url: str, size: int, digest: str, report) -> None:
     partial = path.with_name(path.name + ".partial")
     _report(report, f"downloading {path.name} ({size / 1_000_000:.0f} MB)")
-    request = urllib.request.Request(url, headers={"User-Agent": "QuickTTS"})
+    request = urllib.request.Request(url, headers={"User-Agent": "ChickEN"})
     hasher = hashlib.sha256()
     got = 0
     next_mark = 10
